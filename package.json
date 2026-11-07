@@ -1,6 +1,6 @@
 {
   "name": "kiwisync",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Sync an Obsidian vault through a home server that keeps the real files and their git history.",

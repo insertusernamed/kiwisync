@@ -132,7 +132,7 @@ export class InviteModal extends Modal {
       details.createEl('code', { text: code, cls: 'kiwisync-code' });
       contentEl.createEl('p', {
         cls: 'setting-item-description',
-        text: `The code works once, until ${new Date(expiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`,
+        text: `It expires at ${new Date(expiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} and works only once.`,
       });
     } catch (e) {
       loading.setText((e as Error).message);

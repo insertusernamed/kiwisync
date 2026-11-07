@@ -27,6 +27,10 @@ interface DiskFile {
 }
 
 const decoder = new TextDecoder('utf-8', { fatal: true });
+// Devices upload about a second after typing pauses. Uploads of one note from one device that
+// follow each other closely become a single history entry, covering at most ten minutes.
+const EDIT_SESSION_GAP_MS = 2 * 60_000;
+const EDIT_SESSION_MAX_MS = 10 * 60_000;
 const VERBS: Record<HistoryKind, string> = {
   edit: 'Edit',
   delete: 'Delete',
@@ -42,6 +46,13 @@ export class Hub {
   private queue: Promise<unknown> = Promise.resolve();
   private listeners = new Set<() => void>();
   private oversized = new Set<string>();
+  private session: {
+    commit: string;
+    path: string;
+    device: string;
+    started: number;
+    last: number;
+  } | null = null;
 
   constructor(
     readonly store: Store,
@@ -292,12 +303,28 @@ export class Hub {
         if (e.code !== 'ENOENT') throw e;
       });
     }
-    await this.repo.commit(
+    const now = Date.now();
+    const session = this.session;
+    const fold =
+      kind === 'edit' &&
+      session?.path === path &&
+      session.device === deviceId &&
+      now - session.last < EDIT_SESSION_GAP_MS &&
+      now - session.started < EDIT_SESSION_MAX_MS
+        ? session
+        : null;
+    const commit = await this.repo.commit(
       [{ path, blob }],
       this.author(deviceId, editedAt),
       kind,
       `${VERBS[kind]} ${path}`,
+      undefined,
+      fold?.commit,
     );
+    this.session =
+      kind === 'edit'
+        ? { commit, path, device: deviceId, started: fold?.started ?? now, last: now }
+        : null;
     const seq = this.store.saveFile(
       { path, blob, ...disk, editedAt, device: deviceId },
       pathKey(path),
@@ -330,6 +357,7 @@ export class Hub {
         changes.push({ path: row.path, blob: null, size: 0, mtime: 0, editedAt: Date.now() });
     if (!changes.length) return 0;
 
+    this.session = null;
     const time = Math.max(...changes.map((c) => c.editedAt));
     const subject =
       changes.length === 1

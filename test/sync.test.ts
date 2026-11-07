@@ -221,13 +221,41 @@ test('a hub edit not yet scanned is merged with an upload instead of overwritten
   assert.equal(await phone.vault.text('n.md'), 'A\nb\nc\nD\n');
 });
 
+test('quick successive uploads of a note from one device become one history entry', async (t) => {
+  const hub = await startHub();
+  t.after(hub.close);
+  const a = await hub.client('A');
+  const b = await hub.client('B');
+  for (const text of ['one\n', 'one two\n', 'one two three\n']) {
+    await a.vault.edit('n.md', text);
+    await a.sync();
+  }
+  await b.sync();
+  await b.vault.edit('n.md', 'one two three four\n');
+  await b.sync();
+  await a.sync();
+  await a.vault.edit('n.md', 'one two three four five\n');
+  await a.sync();
+
+  const history = await hub.hub.history('n.md');
+  assert.deepEqual(
+    history.map((h) => h.device),
+    ['A', 'B', 'A'],
+  );
+  assert.equal((await hub.hub.repo.readBlob(history[2]!.blob!))?.toString(), 'one two three\n');
+  assert.equal(await hub.hubVault.text('n.md'), 'one two three four five\n');
+});
+
 test('restoring an old version makes it current everywhere', async (t) => {
   const hub = await startHub();
   t.after(hub.close);
   const a = await hub.client('A');
+  const b = await hub.client('B');
   await a.vault.edit('n.md', 'v1\n');
   await a.sync();
-  await a.vault.edit('n.md', 'v2\n');
+  await b.sync();
+  await b.vault.edit('n.md', 'v2\n');
+  await b.sync();
   await a.sync();
   const v1 = (await hub.hub.history('n.md')).at(-1)!;
   await a.api.restore('n.md', v1.blob!);

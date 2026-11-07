@@ -1,4 +1,4 @@
-import { Notice, Platform, Plugin, TAbstractFile, TFile, requestUrl } from 'obsidian';
+import { MarkdownView, Notice, Platform, Plugin, TAbstractFile, TFile, requestUrl } from 'obsidian';
 import { isSyncPath } from '../shared/paths';
 import { Api, ApiError, type Fetcher } from './api';
 import { defaultDeviceName, devicePlatform } from './device';
@@ -26,6 +26,7 @@ const OTHER_SYNC_PLUGINS: Record<string, string> = {
   'remotely-save': 'Remotely Save',
 };
 const POLL_SECONDS = 60;
+const TYPING_PAUSE_MS = 750;
 const UPDATE_CHECK_MINUTES = 60;
 
 export const fetcher: Fetcher = async ({ url, method, headers, body }) => {
@@ -43,6 +44,7 @@ export default class KiwiSyncPlugin extends Plugin {
   private statusBar: HTMLElement | null = null;
   private settingTab: KiwiSyncSettingTab | null = null;
   private debounce: number | undefined;
+  private typing: number | undefined;
   private stopped = false;
   private lastUpdateCheck = 0;
 
@@ -105,6 +107,20 @@ export default class KiwiSyncPlugin extends Plugin {
       this.syncSoon();
     };
     this.app.workspace.onLayoutReady(() => {
+      // Obsidian saves about two seconds after typing stops. Saving sooner gets the edit to
+      // other devices sooner.
+      this.registerEvent(
+        this.app.workspace.on('editor-change', (_editor, info) => {
+          if (!this.engine || !(info instanceof MarkdownView)) return;
+          window.clearTimeout(this.typing);
+          this.typing = window.setTimeout(() => {
+            void info.save().then(() => {
+              if (info.file) this.engine?.noteEdit(info.file.path);
+              return this.sync();
+            });
+          }, TYPING_PAUSE_MS);
+        }),
+      );
       this.registerEvent(this.app.vault.on('create', (f) => edited(f)));
       this.registerEvent(this.app.vault.on('modify', (f) => edited(f)));
       this.registerEvent(this.app.vault.on('delete', (f) => edited(f, f.path)));
@@ -122,6 +138,7 @@ export default class KiwiSyncPlugin extends Plugin {
   onunload(): void {
     this.stopped = true;
     window.clearTimeout(this.debounce);
+    window.clearTimeout(this.typing);
   }
 
   get connected(): boolean {
@@ -284,7 +301,7 @@ export default class KiwiSyncPlugin extends Plugin {
 
   private syncSoon(): void {
     window.clearTimeout(this.debounce);
-    this.debounce = window.setTimeout(() => void this.sync(), 2000);
+    this.debounce = window.setTimeout(() => void this.sync(), 500);
   }
 
   private showReplaced(path: string, by: string): void {

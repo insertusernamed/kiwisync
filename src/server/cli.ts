@@ -28,7 +28,11 @@ try {
     console.log(`Scan with the phone's camera, or in KiwiSync choose Connect and enter:\n`);
     console.log(`  Server  ${config.publicUrl}`);
     console.log(`  Code    ${code}\n`);
-    console.log(`The code works once, until ${new Date(expiresAt).toLocaleTimeString()}.`);
+    const expires = new Date(expiresAt).toLocaleTimeString([], {
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+    console.log(`It expires at ${expires} and works only once.`);
   } else if (command === 'devices') {
     for (const d of store.devices().filter((d) => !d.removed)) {
       const seen =
@@ -37,7 +41,9 @@ try {
           : d.lastSeen
             ? new Date(d.lastSeen).toLocaleString()
             : 'never';
-      const waiting = d.pending ? `, ${d.pending} changes waiting` : '';
+      const waiting = d.pending
+        ? `, ${d.pending} ${d.pending === 1 ? 'change' : 'changes'} waiting`
+        : '';
       console.log(`${d.name.padEnd(24)} ${d.platform.padEnd(8)} last synced ${seen}${waiting}`);
     }
   } else if (command === 'rename' && args.length >= 2) {

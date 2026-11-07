@@ -120,13 +120,15 @@ export class Repo {
   }
 
   // Commits to the main branch through the regular index, or to another branch through its
-  // own index file so the main index is never disturbed.
+  // own index file so the main index is never disturbed. With `replace`, a commit still at the
+  // tip is swapped for this one, folding a run of small edits into a single history entry.
   async commit(
     changes: FileChange[],
     author: Author,
     kind: HistoryKind,
     subject: string,
     branch?: { ref: string; index: string; fresh?: boolean },
+    replace?: string,
   ): Promise<string> {
     const env: Record<string, string> = branch ? { GIT_INDEX_FILE: branch.index } : {};
     if (branch?.fresh) await rm(branch.index, { force: true });
@@ -136,8 +138,12 @@ export class Repo {
     await this.git(['update-index', '--index-info'], info + '\n', env);
     const tree = text(await this.git(['write-tree'], undefined, env));
     const ref = branch?.ref ?? 'HEAD';
-    const parent = branch?.fresh ? null : await this.head(ref);
-    if (parent && text(await this.git(['rev-parse', `${parent}^{tree}`])) === tree) return parent;
+    const tip = branch?.fresh ? null : await this.head(ref);
+    const parent = replace && tip === replace ? await this.head(`${replace}^`) : tip;
+    if (parent && text(await this.git(['rev-parse', `${parent}^{tree}`])) === tree) {
+      if (parent !== tip) await this.git(['update-ref', ref, parent, tip!]);
+      return parent;
+    }
     const commit = text(
       await this.git(
         ['commit-tree', tree, ...(parent ? ['-p', parent] : []), '-F', '-'],
@@ -151,7 +157,7 @@ export class Repo {
         },
       ),
     );
-    await this.git(['update-ref', ref, commit, parent ?? NO_OBJECT]);
+    await this.git(['update-ref', ref, commit, tip ?? NO_OBJECT]);
     return commit;
   }
 
