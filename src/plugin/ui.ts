@@ -1,6 +1,7 @@
 import { App, Modal, Notice, PluginSettingTab, Setting } from 'obsidian';
 import qrcode from 'qrcode-generator';
-import { isSyncPath, type ConfigCategory } from '../shared/paths';
+import { diffLines, withContext } from '../shared/diff';
+import { isDrawing, isSyncPath, type ConfigCategory } from '../shared/paths';
 import type { Device, HistoryEntry, HistoryKind } from '../shared/protocol';
 import type KiwiSyncPlugin from './main';
 import { defaultDeviceName } from './device';
@@ -168,39 +169,29 @@ export class HistoryModal extends Modal {
     list.empty();
     if (!entries.length) list.setText('This file has no synced versions yet.');
     const current = entries.find((e) => e.kind !== 'replaced')?.commit;
-    for (const entry of entries) {
+    entries.forEach((entry, index) => {
+      // Each version is compared with the one before it in the file's own history.
+      const previous = entries
+        .slice(index + 1)
+        .find((e) => e.blob && e.kind !== 'replaced' && e.blob !== entry.blob);
       const row = new Setting(list)
         .setName(`${formatTime(entry.time)}, ${entry.device}`)
         .setDesc(
           (entry.from ? `${KIND_LABELS[entry.kind]} from ${entry.from}` : KIND_LABELS[entry.kind]) +
             (entry.commit === current ? ' (current)' : ''),
         );
-      if (!entry.blob) continue;
+      if (!entry.blob) return;
       const blob = entry.blob;
-      row.addButton((b) => b.setButtonText('View').onClick(() => this.preview(blob, entry)));
-      if (entry.commit !== current)
-        row.addButton((b) => b.setButtonText('Restore').onClick(() => this.restore(blob)));
-    }
-  }
-
-  private async preview(blob: string, entry: HistoryEntry): Promise<void> {
-    const modal = new Modal(this.app);
-    modal.setTitle(`${this.path}, ${formatTime(entry.time)}`);
-    modal.open();
-    try {
-      const bytes = await this.plugin.api!.blob(blob);
-      let text: string | null = null;
-      try {
-        text = bytes.length <= PREVIEW_LIMIT ? decoder.decode(bytes) : null;
-      } catch {
-        text = null;
-      }
-      if (text === null)
-        modal.contentEl.setText(`${formatSize(bytes.length)}. Restore it to open it.`);
-      else modal.contentEl.createEl('pre', { cls: 'kiwisync-preview', text });
-    } catch (e) {
-      modal.contentEl.setText((e as Error).message);
-    }
+      const restore = entry.commit === current ? null : () => this.restore(blob);
+      row.addButton((b) =>
+        b
+          .setButtonText('View')
+          .onClick(() =>
+            new VersionModal(this.app, this.plugin, this.path, entry, previous, restore).open(),
+          ),
+      );
+      if (restore) row.addButton((b) => b.setButtonText('Restore').onClick(restore));
+    });
   }
 
   private async restore(blob: string): Promise<void> {
@@ -216,6 +207,119 @@ export class HistoryModal extends Modal {
 
   onClose(): void {
     this.contentEl.empty();
+  }
+}
+
+// One version of a file, shown as the changes from the version before it.
+class VersionModal extends Modal {
+  constructor(
+    app: App,
+    private plugin: KiwiSyncPlugin,
+    private path: string,
+    private entry: HistoryEntry,
+    private previous: HistoryEntry | undefined,
+    private restore: (() => Promise<void>) | null,
+  ) {
+    super(app);
+  }
+
+  async onOpen(): Promise<void> {
+    const { contentEl, entry, previous } = this;
+    this.setTitle(`${formatTime(entry.time)}, ${entry.device}`);
+    contentEl.setText('Loading');
+    try {
+      const [bytes, before] = await Promise.all([
+        this.plugin.api!.blob(entry.blob!),
+        previous ? this.plugin.api!.blob(previous.blob!) : null,
+      ]);
+      contentEl.empty();
+      const text = asText(bytes);
+      if (text === null) {
+        contentEl.createEl('p', {
+          text: `${formatSize(bytes.length)}. This kind of file can't be shown here; restore it to open it.`,
+        });
+      } else if (isDrawing(this.path, text)) {
+        contentEl.createEl('p', {
+          text: "Drawings can't be compared line by line. Restore this version to see it.",
+        });
+      } else this.showText(text, before && asText(before));
+    } catch (e) {
+      contentEl.setText((e as Error).message);
+    }
+    if (this.restore) {
+      const restore = this.restore;
+      new Setting(contentEl).addButton((b) =>
+        b
+          .setButtonText('Restore this version')
+          .setCta()
+          .onClick(async () => {
+            this.close();
+            await restore();
+          }),
+      );
+    }
+  }
+
+  private showText(text: string, before: string | null): void {
+    const { contentEl, previous } = this;
+    const lines = before === null ? null : diffLines(before, text);
+    const intro = contentEl.createEl('p', { cls: 'setting-item-description' });
+    const body = contentEl.createDiv();
+    const whole = () => {
+      body.empty();
+      body.createEl('pre', { cls: 'kiwisync-preview', text });
+    };
+    if (!previous || lines === null) {
+      intro.setText(
+        previous
+          ? 'Too many changes to compare. This is the whole version.'
+          : 'The first version of this file.',
+      );
+      whole();
+      return;
+    }
+    intro.setText(
+      `Changes since the version from ${formatTime(previous.time)}, ${previous.device}.`,
+    );
+    let showingChanges = true;
+    const changes = () => {
+      body.empty();
+      const view = body.createDiv({ cls: 'kiwisync-diff' });
+      const rows = withContext(lines);
+      if (!rows.some((r) => r.kind === 'added' || r.kind === 'removed'))
+        view.createDiv({ cls: 'kiwisync-diff-skip', text: 'No changes in the text.' });
+      for (const row of rows) {
+        if (row.kind === 'skipped') {
+          const count = `${row.count} unchanged ${row.count === 1 ? 'line' : 'lines'}`;
+          view.createDiv({ cls: 'kiwisync-diff-skip', text: count });
+          continue;
+        }
+        const mark = { same: ' ', added: '+', removed: '−' }[row.kind];
+        view.createDiv({ cls: `kiwisync-diff-line is-${row.kind}`, text: `${mark} ${row.text}` });
+      }
+    };
+    changes();
+    new Setting(contentEl).addButton((b) =>
+      b.setButtonText('Show whole version').onClick(() => {
+        showingChanges = !showingChanges;
+        if (showingChanges) changes();
+        else whole();
+        b.setButtonText(showingChanges ? 'Show whole version' : 'Show changes');
+      }),
+    );
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+function asText(bytes: Uint8Array): string | null {
+  if (bytes.length > PREVIEW_LIMIT) return null;
+  try {
+    return decoder.decode(bytes);
+  } catch {
+    return null;
   }
 }
 

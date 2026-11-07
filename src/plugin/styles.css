@@ -33,3 +33,31 @@
   overflow: auto;
   user-select: text;
 }
+
+.kiwisync-diff {
+  font-family: var(--font-monospace);
+  font-size: var(--font-smaller);
+  max-height: 60vh;
+  overflow: auto;
+  user-select: text;
+}
+
+.kiwisync-diff-line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 0 var(--size-4-2);
+}
+
+.kiwisync-diff-line.is-added {
+  background-color: rgba(var(--color-green-rgb), 0.15);
+}
+
+.kiwisync-diff-line.is-removed {
+  background-color: rgba(var(--color-red-rgb), 0.15);
+}
+
+.kiwisync-diff-skip {
+  color: var(--text-muted);
+  font-style: italic;
+  padding: var(--size-4-1) var(--size-4-2);
+}

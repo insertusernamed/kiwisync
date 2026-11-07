@@ -62,12 +62,19 @@ export function pathKey(path: string): string {
   return path.normalize('NFC').toLowerCase();
 }
 
-// Line merging is only safe for prose. Excalidraw notes embed compressed JSON split across
-// lines, and canvas files are JSON, so those are replaced whole instead.
+// Excalidraw drawings are notes whose body is compressed JSON split across lines.
+export function isDrawing(path: string, text: string): boolean {
+  const lower = path.toLowerCase();
+  if (lower.endsWith('.excalidraw') || lower.endsWith('.excalidraw.md')) return true;
+  return /^---\r?\n[\s\S]*?excalidraw-plugin:/.test(text);
+}
+
+// Line merging is only safe for prose. Drawings and canvas files are JSON, so those are
+// replaced whole instead.
 export function isMergeable(path: string, text: string): boolean {
   const lower = path.toLowerCase();
   if (!lower.endsWith('.md') && !lower.endsWith('.txt')) return false;
-  return !lower.endsWith('.excalidraw.md') && !/^---\r?\n[\s\S]*?excalidraw-plugin:/.test(text);
+  return !isDrawing(path, text);
 }
 
 // The enabled plugin list as the hub keeps it: always including KiwiSync, so a device that
