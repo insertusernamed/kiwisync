@@ -17,9 +17,11 @@ export interface LocalVault {
   // Writes only while the file still holds the `expected` version (null: the file must not
   // exist), so an edit made in the meantime is never overwritten. Returns whether it wrote.
   write(path: string, bytes: Uint8Array, expected: string | null): Promise<boolean>;
-  // Same rule as write. A file that is already gone counts as removed.
+  // Same rule as write. A file that is already gone counts as removed. Folders the removal
+  // leaves empty are removed too, since folders exist only to hold synced files.
   remove(path: string, expected: string): Promise<boolean>;
-  // Moves a file that still holds `expected` to a path that is free. Returns whether it moved.
+  // Moves a file that still holds `expected` to a path that is free, removing folders the move
+  // leaves empty. Returns whether it moved.
   rename(from: string, to: string, expected: string): Promise<boolean>;
 }
 

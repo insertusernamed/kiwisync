@@ -18,6 +18,7 @@ import { readConfig } from '../src/server/config';
 import { makeServer } from '../src/server/http';
 import { openHub } from '../src/server/open';
 import { HUB_ID } from '../src/server/store';
+import { pruneEmptyFolders } from '../src/server/hub';
 import { Api, type Fetcher } from '../src/plugin/api';
 import { SyncEngine, emptyState, type LocalFile, type LocalVault } from '../src/plugin/sync';
 
@@ -74,6 +75,7 @@ export class FolderVault implements LocalVault {
     if (!current) return true;
     if ((await blobId(current.bytes)) !== expected) return false;
     await unlink(this.full(path));
+    await this.prune(path);
     return true;
   }
 
@@ -83,7 +85,19 @@ export class FolderVault implements LocalVault {
       return false;
     await mkdir(dirname(this.full(to)), { recursive: true });
     await rename(this.full(from), this.full(to));
+    await this.prune(from);
     return true;
+  }
+
+  async exists(path: string): Promise<boolean> {
+    return stat(this.full(path)).then(
+      () => true,
+      () => false,
+    );
+  }
+
+  private async prune(path: string): Promise<void> {
+    await pruneEmptyFolders(this.root, path);
   }
 
   async edit(path: string, text: string): Promise<void> {

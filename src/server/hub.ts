@@ -1,4 +1,14 @@
-import { lstat, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  rmdir,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { dirname, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
@@ -150,6 +160,7 @@ export class Hub {
         throw new HttpError(409, `"${clash.path}" already exists with different capitalization.`);
       await mkdir(dirname(this.full(to)), { recursive: true });
       await rename(this.full(from), this.full(to));
+      await pruneEmptyFolders(this.vault, from);
       const s = await lstat(this.full(to));
       this.session = null;
       await this.repo.commit(
@@ -357,10 +368,12 @@ export class Hub {
   ): Promise<number> {
     let disk: DiskFile = { size: 0, mtime: 0 };
     if (bytes) disk = await this.writeDisk(path, bytes);
-    else
+    else {
       await unlink(this.full(path)).catch((e: NodeJS.ErrnoException) => {
         if (e.code !== 'ENOENT') throw e;
       });
+      await pruneEmptyFolders(this.vault, path);
+    }
     const now = Date.now();
     const session = this.session;
     const fold =
@@ -524,6 +537,20 @@ export class Hub {
 
   private notify(): void {
     for (const listener of this.listeners) listener();
+  }
+}
+
+// Removes the folders above `path` that are left empty, stopping at the first one that is not
+// and never removing the root or the settings folder itself.
+export async function pruneEmptyFolders(root: string, path: string): Promise<void> {
+  const parts = path.split('/').slice(0, -1);
+  while (parts.length && parts.join('/') !== CONFIG_DIR) {
+    try {
+      await rmdir(join(root, ...parts));
+    } catch {
+      return;
+    }
+    parts.pop();
   }
 }
 

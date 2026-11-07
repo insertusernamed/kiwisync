@@ -97,13 +97,16 @@ export class ObsidianVault implements LocalVault {
       if (!current) return true;
       if ((await blobId(current.bytes)) !== expected) return false;
       await this.app.vault.adapter.remove(this.local(path));
+      await this.pruneSettingsFolders(path);
       return true;
     }
     const file = this.file(path);
     if (!file) return true;
     if ((await blobId(new Uint8Array(await this.app.vault.readBinary(file)))) !== expected)
       return false;
+    const folder = file.parent;
     await this.app.vault.trash(file, false);
+    await this.pruneFolders(folder);
     return true;
   }
 
@@ -114,6 +117,7 @@ export class ObsidianVault implements LocalVault {
         return false;
       await this.createSettingsFolders(to);
       await this.app.vault.adapter.rename(this.local(from), this.local(to));
+      await this.pruneSettingsFolders(from);
       return true;
     }
     const file = this.file(from);
@@ -121,10 +125,38 @@ export class ObsidianVault implements LocalVault {
     if ((await blobId(new Uint8Array(await this.app.vault.readBinary(file)))) !== expected)
       return false;
     await this.createParents(to);
+    const folder = file.parent;
     // Vault.rename, not FileManager.renameFile: links in other notes were already updated on
     // the device that renamed it, and those edits arrive separately.
     await this.app.vault.rename(file, to);
+    await this.pruneFolders(folder);
     return true;
+  }
+
+  // Obsidian's non-recursive folder removal fails even on empty folders, so emptiness is
+  // checked on disk, hidden files included, before a forced removal.
+  private async pruneFolders(folder: TFolder | null): Promise<void> {
+    while (folder && !folder.isRoot()) {
+      const { files, folders } = await this.app.vault.adapter.list(folder.path);
+      if (files.length || folders.length) return;
+      const parent = folder.parent;
+      await this.app.vault.delete(folder, true);
+      folder = parent;
+    }
+  }
+
+  // Stops at the settings folder itself, which Obsidian always needs.
+  private async pruneSettingsFolders(path: string): Promise<void> {
+    const { adapter, configDir } = this.app.vault;
+    const parts = this.local(path).split('/').slice(0, -1);
+    while (parts.length > 1) {
+      const dir = parts.join('/');
+      if (dir === configDir) return;
+      const { files, folders } = await adapter.list(dir);
+      if (files.length || folders.length) return;
+      await adapter.rmdir(dir, true);
+      parts.pop();
+    }
   }
 
   // Maps a path as the hub names it to this device's settings folder, which can be renamed.

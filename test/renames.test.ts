@@ -124,3 +124,32 @@ test('a file moved in the hub folder is renamed on devices', async (t) => {
   assert.equal(history.length, 2);
   assert.deepEqual(hub.hub.deleted(), []);
 });
+
+test('folders emptied by a synced move or deletion are removed elsewhere', async (t) => {
+  const hub = await startHub();
+  t.after(hub.close);
+  const ipad = await hub.client('iPad');
+  const phone = await hub.client('Phone');
+  await ipad.vault.edit('Book/Ch.2.md', 'two\n');
+  await ipad.vault.edit('Old/Deep/a.md', 'a\n');
+  await ipad.vault.edit('Keep/b.md', 'b\n');
+  await ipad.vault.edit('Keep/c.md', 'c\n');
+  await ipad.sync();
+  await phone.sync();
+
+  await ipad.move('Book/Ch.2.md', 'Textbook/Ch.2.md');
+  await ipad.remove('Old/Deep/a.md');
+  await ipad.remove('Keep/b.md');
+  await ipad.sync();
+  await phone.sync();
+
+  for (const [vault, label] of [
+    [phone.vault, 'phone'],
+    [hub.hubVault, 'hub'],
+  ] as const) {
+    assert.equal(await vault.exists('Book'), false, label);
+    assert.equal(await vault.exists('Old'), false, label);
+    assert.equal(await vault.text('Keep/c.md'), 'c\n', label);
+    assert.equal(await vault.text('Textbook/Ch.2.md'), 'two\n', label);
+  }
+});
