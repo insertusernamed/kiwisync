@@ -9,7 +9,7 @@ import {
   type PairRequest,
   type Platform,
 } from '../shared/protocol';
-import { HttpError, type Hub } from './hub';
+import { HttpError, slug, type Hub } from './hub';
 import { HUB_ID, type DeviceRow } from './store';
 
 export interface ServerOptions {
@@ -130,7 +130,10 @@ export function makeServer(options: ServerOptions) {
         throw new HttpError(400, 'Bad snapshot.');
       const valid = files.every((f) => typeof f?.path === 'string' && isBlobId(f?.blob));
       if (!valid) throw new HttpError(400, 'Bad snapshot.');
-      return json(res, 200, { branch: await hub.snapshot(label, files, device.id) });
+      const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+      const branch = `backup/${slug(label)}-${stamp}`;
+      await hub.snapshot(branch, `Files on ${label} before it joined`, files, device.id);
+      return json(res, 200, { branch });
     }
     if (route === 'GET /api/devices') {
       return json(

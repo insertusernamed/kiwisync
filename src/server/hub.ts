@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isMergeable, isSyncPath, pathKey } from '../shared/paths';
@@ -114,30 +114,33 @@ export class Hub {
     }));
   }
 
-  // Saves a device's files on their own branch without changing the vault. Used when a device
-  // with existing notes joins and takes the hub's copy, so nothing on it is lost.
-  async snapshot(label: string, files: FileChange[], deviceId: string): Promise<string> {
+  // Saves files on a branch of their own without changing the vault, such as a device's notes
+  // before it takes the hub's copy.
+  async snapshot(
+    branch: string,
+    subject: string,
+    files: FileChange[],
+    deviceId: string,
+  ): Promise<void> {
     for (const f of files) {
       checkPath(f.path);
       if (!f.blob || !(await this.repo.hasBlob(f.blob)))
         throw new HttpError(400, `${f.path} was not uploaded.`);
     }
-    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
-    const branch = `backup/${slug(label)}-${stamp}`;
-    await this.exclusive(() =>
-      this.repo.commit(
-        files,
-        this.author(deviceId, Date.now()),
-        'import',
-        `Copy of ${label} before joining`,
-        {
-          ref: `refs/heads/${branch}`,
-          index: join(this.repo.dir, '.git', `kiwisync-${randomUUID()}.index`),
+    const ref = `refs/heads/${branch}`;
+    if (await this.repo.head(ref)) throw new HttpError(409, `The branch ${branch} already exists.`);
+    const index = join(this.repo.dir, '.git', `kiwisync-${randomUUID()}.index`);
+    try {
+      await this.exclusive(() =>
+        this.repo.commit(files, this.author(deviceId, Date.now()), 'import', subject, {
+          ref,
+          index,
           fresh: true,
-        },
-      ),
-    );
-    return branch;
+        }),
+      );
+    } finally {
+      await rm(index, { force: true });
+    }
   }
 
   private async putNow(
@@ -415,7 +418,7 @@ function decode(bytes: Uint8Array): string | null {
   }
 }
 
-function slug(label: string): string {
+export function slug(label: string): string {
   return (
     label
       .toLowerCase()

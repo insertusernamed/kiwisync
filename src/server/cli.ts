@@ -3,6 +3,7 @@ import { join, relative, resolve, sep } from 'node:path';
 import qrcode from 'qrcode-generator';
 import { isSyncPath } from '../shared/paths';
 import { readConfig } from './config';
+import { slug } from './hub';
 import { openHub } from './open';
 import { HUB_ID } from './store';
 
@@ -53,7 +54,9 @@ try {
     const files = [];
     for (const path of await listFiles(folder))
       files.push({ path, blob: await hub.repo.writeBlob(await readFile(join(folder, path))) });
-    const branch = await hub.snapshot(args.slice(1).join(' '), files, HUB_ID);
+    const label = args.slice(1).join(' ');
+    const branch = `backup/${slug(label)}`;
+    await hub.snapshot(branch, label, files, HUB_ID);
     console.log(`Saved ${files.length} files on branch ${branch}.`);
   } else {
     console.log(USAGE);
