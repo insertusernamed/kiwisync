@@ -1,0 +1,35 @@
+.kiwisync-error {
+  color: var(--text-error);
+}
+
+.kiwisync-qr {
+  margin: var(--size-4-4) auto;
+  max-width: 260px;
+}
+
+.kiwisync-qr svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.kiwisync-invite {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--size-4-2) var(--size-4-4);
+  align-items: baseline;
+  overflow-wrap: anywhere;
+}
+
+.kiwisync-code {
+  font-size: 1.3em;
+  letter-spacing: 0.05em;
+}
+
+.kiwisync-preview {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 60vh;
+  overflow: auto;
+  user-select: text;
+}

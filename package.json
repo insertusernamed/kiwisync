@@ -1,0 +1,28 @@
+{
+  "name": "kiwisync",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Sync an Obsidian vault through a home server that keeps the real files and their git history.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "tsc --noEmit && prettier --check .",
+    "format": "prettier --write .",
+    "test": "tsx --test test/*.test.ts",
+    "start": "node --disable-warning=ExperimentalWarning dist/server/main.js",
+    "kiwisync": "node --disable-warning=ExperimentalWarning dist/server/cli.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "obsidian": "^1.11.0",
+    "prettier": "^3.8.1",
+    "qrcode-generator": "^2.0.4",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

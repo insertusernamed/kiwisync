@@ -1,0 +1,10 @@
+{
+  "id": "kiwisync",
+  "name": "KiwiSync",
+  "version": "0.1.0",
+  "minAppVersion": "1.11.4",
+  "description": "Sync your vault through your own home server, which keeps the real files and their full history.",
+  "author": "insertusernamed",
+  "authorUrl": "https://github.com/insertusernamed",
+  "isDesktopOnly": false
+}

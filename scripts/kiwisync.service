@@ -1,0 +1,31 @@
+# Install with: sudo cp scripts/kiwisync.service /etc/systemd/system/
+# Adjust User, the paths, and the node binary for the machine first.
+[Unit]
+Description=KiwiSync hub for an Obsidian vault
+After=network.target
+
+[Service]
+Type=simple
+User=danielhost
+Group=danielhost
+WorkingDirectory=/home/danielhost/kiwisync
+EnvironmentFile=/home/danielhost/kiwisync/.env
+ExecStart=/home/danielhost/.nvm/versions/node/v22.23.2/bin/node --disable-warning=ExperimentalWarning dist/server/main.js
+Restart=on-failure
+RestartSec=5
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/danielhost/kiwisync/data /home/danielhost/Vaults
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
