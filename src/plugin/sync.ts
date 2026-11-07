@@ -1,5 +1,12 @@
 import { blobId } from '../shared/blob';
-import { PLUGIN_LIST, configCategory, isSyncPath, mergePluginLists } from '../shared/paths';
+import {
+  FOLDER,
+  PLUGIN_LIST,
+  configCategory,
+  isFolderPath,
+  isSyncPath,
+  mergePluginLists,
+} from '../shared/paths';
 import { Api, ApiError } from './api';
 
 export interface LocalFile {
@@ -9,7 +16,7 @@ export interface LocalFile {
 }
 
 // Paths are as the hub names them; settings live under `.obsidian/` whatever the device calls
-// its settings folder.
+// its settings folder. Folders are listed with a trailing slash and a size and time of 0.
 export interface LocalVault {
   list(): Promise<LocalFile[]>;
   stat(path: string): Promise<LocalFile | null>;
@@ -17,12 +24,13 @@ export interface LocalVault {
   // Writes only while the file still holds the `expected` version (null: the file must not
   // exist), so an edit made in the meantime is never overwritten. Returns whether it wrote.
   write(path: string, bytes: Uint8Array, expected: string | null): Promise<boolean>;
-  // Same rule as write. A file that is already gone counts as removed. Folders the removal
-  // leaves empty are removed too, since folders exist only to hold synced files.
+  // Same rule as write. A file that is already gone counts as removed.
   remove(path: string, expected: string): Promise<boolean>;
-  // Moves a file that still holds `expected` to a path that is free, removing folders the move
-  // leaves empty. Returns whether it moved.
+  // Moves a file that still holds `expected` to a path that is free. Returns whether it moved.
   rename(from: string, to: string, expected: string): Promise<boolean>;
+  createFolder(path: string): Promise<void>;
+  // Removes a folder only if it is empty. A folder that is already gone counts as removed.
+  removeFolder(path: string): Promise<boolean>;
 }
 
 export interface SyncState {
@@ -58,7 +66,7 @@ export class SyncEngine {
   readonly errors = new Map<string, string>();
   lastSync: number | null = null;
   // Which paths this device syncs: notes always, settings only for the groups turned on.
-  wanted: (path: string) => boolean = isSyncPath;
+  wanted: (path: string) => boolean = (path) => isSyncPath(path) || isFolderPath(path);
   private running: Promise<void> | null = null;
   private again = false;
   private settingsTouched = false;
@@ -251,9 +259,11 @@ export class SyncEngine {
 
   private async push(): Promise<void> {
     await this.sendRenames();
-    for (const [path, edited] of Object.entries(this.state.dirty)) {
+    for (const [path, edited] of await this.uploadOrder()) {
       try {
-        const done = await this.upload(path, edited);
+        const done = isFolderPath(path)
+          ? await this.uploadFolder(path)
+          : await this.upload(path, edited);
         // An edit made while uploading leaves a newer time, so the file is uploaded again.
         if (done && this.state.dirty[path] === edited) delete this.state.dirty[path];
       } catch (e) {
@@ -262,6 +272,44 @@ export class SyncEngine {
         delete this.state.dirty[path];
       }
     }
+  }
+
+  // Files go first, so a deleted folder is already empty when its deletion arrives. Folders
+  // are then created outermost first and deleted innermost first.
+  private async uploadOrder(): Promise<[string, number][]> {
+    const entries = Object.entries(this.state.dirty);
+    const folders: [string, number, boolean][] = [];
+    for (const [path, edited] of entries)
+      if (isFolderPath(path)) folders.push([path, edited, !!(await this.vault.stat(path))]);
+    folders.sort(([a, , aExists], [b, , bExists]) =>
+      aExists !== bExists
+        ? aExists
+          ? -1
+          : 1
+        : aExists
+          ? depth(a) - depth(b)
+          : depth(b) - depth(a),
+    );
+    return [
+      ...entries.filter(([path]) => !isFolderPath(path)),
+      ...folders.map(([path, edited]): [string, number] => [path, edited]),
+    ];
+  }
+
+  private async uploadFolder(path: string): Promise<boolean> {
+    const { files } = this.state;
+    const exists = !!(await this.vault.stat(path));
+    if (exists === !!files[path]) return true;
+    if (exists) {
+      await this.api.createFolder(path);
+      files[path] = { path, size: 0, mtime: 0, blob: FOLDER };
+      return true;
+    }
+    const result = await this.api.removeFolder(path);
+    if (result.outcome === 'deleted') delete files[path];
+    // Another device added something here this device has not seen yet; it arrives next pull.
+    else await this.vault.createFolder(path);
+    return true;
   }
 
   // A rename moves the file and its history on the hub. Anything that makes it impossible,
@@ -349,6 +397,10 @@ export class SyncEngine {
         const { path, blob, from } = change;
         // Local edits go up first on the next push, where the server combines them.
         if (path in dirty || this.errors.has(path) || !this.wanted(path)) continue;
+        if (isFolderPath(path)) {
+          await this.applyFolder(path, blob);
+          continue;
+        }
         // Renamed on another device: move the local file so an open note stays open. The old
         // path's deletion comes next and finds nothing left to delete.
         const source = from ? files[from] : undefined;
@@ -379,6 +431,16 @@ export class SyncEngine {
     }
   }
 
+  private async applyFolder(path: string, blob: string | null): Promise<void> {
+    const { files, dirty } = this.state;
+    if (blob) {
+      await this.vault.createFolder(path);
+      files[path] = { path, size: 0, mtime: 0, blob: FOLDER };
+    } else if (await this.vault.removeFolder(path)) delete files[path];
+    // Still holds files not uploaded yet, so this device puts the folder back on the hub.
+    else dirty[path] = this.api.now();
+  }
+
   private async download(path: string, blob: string, expected: string | null): Promise<boolean> {
     const bytes = await this.api.blob(blob);
     if (!(await this.vault.write(path, bytes, expected))) return false;
@@ -393,4 +455,8 @@ export class SyncEngine {
     this.settingsTouched = false;
     this.listener.settingsChanged();
   }
+}
+
+function depth(folder: string): number {
+  return folder.split('/').length;
 }

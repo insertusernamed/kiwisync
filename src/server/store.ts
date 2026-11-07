@@ -123,6 +123,24 @@ export class Store {
     return row && toFile(row);
   }
 
+  liveFolders(): FileRow[] {
+    return (
+      this.db
+        .prepare(`SELECT * FROM files WHERE blob IS NOT NULL AND substr(path, -1) = '/'`)
+        .all() as Row[]
+    ).map(toFile);
+  }
+
+  // Whether anything synced is still inside a folder.
+  hasLiveInside(folder: string): boolean {
+    return !!this.db
+      .prepare(
+        `SELECT 1 FROM files WHERE blob IS NOT NULL AND path != ?
+         AND substr(path, 1, length(?)) = ? LIMIT 1`,
+      )
+      .get(folder, folder, folder);
+  }
+
   liveFiles(): FileRow[] {
     return (this.db.prepare('SELECT * FROM files WHERE blob IS NOT NULL').all() as Row[]).map(
       toFile,
@@ -193,7 +211,7 @@ export class Store {
       this.db
         .prepare(
           `SELECT * FROM files WHERE blob IS NULL AND last_blob IS NOT NULL AND moved_to IS NULL
-           ORDER BY edited_at DESC LIMIT ?`,
+           AND substr(path, -1) != '/' ORDER BY edited_at DESC LIMIT ?`,
         )
         .all(limit) as Row[]
     ).map(toFile);

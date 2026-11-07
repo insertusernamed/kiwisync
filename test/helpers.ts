@@ -5,6 +5,7 @@ import {
   readdir,
   rename,
   rm,
+  rmdir,
   stat,
   unlink,
   writeFile,
@@ -18,7 +19,6 @@ import { readConfig } from '../src/server/config';
 import { makeServer } from '../src/server/http';
 import { openHub } from '../src/server/open';
 import { HUB_ID } from '../src/server/store';
-import { pruneEmptyFolders } from '../src/server/hub';
 import { Api, type Fetcher } from '../src/plugin/api';
 import { SyncEngine, emptyState, type LocalFile, type LocalVault } from '../src/plugin/sync';
 
@@ -43,8 +43,8 @@ export class FolderVault implements LocalVault {
     const entries = await readdir(this.root, { recursive: true, withFileTypes: true });
     const files: LocalFile[] = [];
     for (const e of entries) {
-      if (!e.isFile()) continue;
-      const path = relative(this.root, join(e.parentPath, e.name)).split(sep).join('/');
+      const relativePath = relative(this.root, join(e.parentPath, e.name)).split(sep).join('/');
+      const path = e.isDirectory() ? `${relativePath}/` : relativePath;
       if (isHubPath(path)) files.push((await this.stat(path))!);
     }
     return files;
@@ -52,7 +52,20 @@ export class FolderVault implements LocalVault {
 
   async stat(path: string): Promise<LocalFile | null> {
     const s = await stat(this.full(path)).catch(() => null);
-    return s ? { path, size: s.size, mtime: Math.round(s.mtimeMs) + this.skew } : null;
+    if (!s || s.isDirectory() !== path.endsWith('/')) return null;
+    if (s.isDirectory()) return { path, size: 0, mtime: 0 };
+    return { path, size: s.size, mtime: Math.round(s.mtimeMs) + this.skew };
+  }
+
+  async createFolder(path: string): Promise<void> {
+    await mkdir(this.full(path), { recursive: true });
+  }
+
+  async removeFolder(path: string): Promise<boolean> {
+    if (!(await this.exists(path))) return true;
+    if ((await readdir(this.full(path))).length) return false;
+    await rmdir(this.full(path));
+    return true;
   }
 
   async read(path: string) {
@@ -75,7 +88,6 @@ export class FolderVault implements LocalVault {
     if (!current) return true;
     if ((await blobId(current.bytes)) !== expected) return false;
     await unlink(this.full(path));
-    await this.prune(path);
     return true;
   }
 
@@ -85,7 +97,6 @@ export class FolderVault implements LocalVault {
       return false;
     await mkdir(dirname(this.full(to)), { recursive: true });
     await rename(this.full(from), this.full(to));
-    await this.prune(from);
     return true;
   }
 
@@ -94,10 +105,6 @@ export class FolderVault implements LocalVault {
       () => true,
       () => false,
     );
-  }
-
-  private async prune(path: string): Promise<void> {
-    await pruneEmptyFolders(this.root, path);
   }
 
   async edit(path: string, text: string): Promise<void> {
@@ -110,7 +117,8 @@ export class FolderVault implements LocalVault {
   }
 
   async delete(path: string): Promise<void> {
-    await unlink(this.full(path));
+    if (path.endsWith('/')) await rmdir(this.full(path));
+    else await unlink(this.full(path));
   }
 
   private full(path: string): string {

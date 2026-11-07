@@ -1,6 +1,6 @@
 import { TFile, TFolder, type App } from 'obsidian';
 import { blobId } from '../shared/blob';
-import { CONFIG_DIR, configCategory, isSyncPath } from '../shared/paths';
+import { CONFIG_DIR, configCategory, isFolderPath, isSyncPath } from '../shared/paths';
 import type { LocalFile, LocalVault } from './sync';
 
 const TEXT = new Set(['md', 'txt', 'canvas', 'json', 'css', 'csv', 'svg', 'html']);
@@ -19,10 +19,15 @@ export class ObsidianVault implements LocalVault {
       .getFiles()
       .filter((f) => isSyncPath(f.path))
       .map((f) => ({ path: f.path, size: f.stat.size, mtime: f.stat.mtime }));
-    return [...notes, ...(await this.listSettings())];
+    const folders = this.app.vault
+      .getAllLoadedFiles()
+      .filter((f): f is TFolder => f instanceof TFolder && !f.isRoot() && isSyncPath(f.path))
+      .map((f) => ({ path: `${f.path}/`, size: 0, mtime: 0 }));
+    return [...notes, ...folders, ...(await this.listSettings())];
   }
 
   async stat(path: string): Promise<LocalFile | null> {
+    if (isFolderPath(path)) return this.folder(path) ? { path, size: 0, mtime: 0 } : null;
     if (configCategory(path)) {
       const s = await this.app.vault.adapter.stat(this.local(path));
       return s?.type === 'file' ? { path, size: s.size, mtime: s.mtime } : null;
@@ -104,9 +109,22 @@ export class ObsidianVault implements LocalVault {
     if (!file) return true;
     if ((await blobId(new Uint8Array(await this.app.vault.readBinary(file)))) !== expected)
       return false;
-    const folder = file.parent;
     await this.app.vault.trash(file, false);
-    await this.pruneFolders(folder);
+    return true;
+  }
+
+  async createFolder(path: string): Promise<void> {
+    await this.createFolders(path.replace(/\/$/, ''));
+  }
+
+  async removeFolder(path: string): Promise<boolean> {
+    const folder = this.folder(path);
+    if (!folder) return true;
+    // Hidden files count, since the vault does not list them.
+    const { files, folders } = await this.app.vault.adapter.list(folder.path);
+    if (files.length || folders.length) return false;
+    // Obsidian's non-recursive folder removal fails even on empty folders.
+    await this.app.vault.delete(folder, true);
     return true;
   }
 
@@ -125,27 +143,14 @@ export class ObsidianVault implements LocalVault {
     if ((await blobId(new Uint8Array(await this.app.vault.readBinary(file)))) !== expected)
       return false;
     await this.createParents(to);
-    const folder = file.parent;
     // Vault.rename, not FileManager.renameFile: links in other notes were already updated on
     // the device that renamed it, and those edits arrive separately.
     await this.app.vault.rename(file, to);
-    await this.pruneFolders(folder);
     return true;
   }
 
-  // Obsidian's non-recursive folder removal fails even on empty folders, so emptiness is
-  // checked on disk, hidden files included, before a forced removal.
-  private async pruneFolders(folder: TFolder | null): Promise<void> {
-    while (folder && !folder.isRoot()) {
-      const { files, folders } = await this.app.vault.adapter.list(folder.path);
-      if (files.length || folders.length) return;
-      const parent = folder.parent;
-      await this.app.vault.delete(folder, true);
-      folder = parent;
-    }
-  }
-
-  // Stops at the settings folder itself, which Obsidian always needs.
+  // A plugin's folder goes with its last file. Stops at the settings folder itself. Obsidian's
+  // non-recursive removal fails even on empty folders, so emptiness is checked first.
   private async pruneSettingsFolders(path: string): Promise<void> {
     const { adapter, configDir } = this.app.vault;
     const parts = this.local(path).split('/').slice(0, -1);
@@ -204,13 +209,24 @@ export class ObsidianVault implements LocalVault {
     }
   }
 
+  private folder(path: string): TFolder | null {
+    const folder = this.app.vault.getAbstractFileByPath(path.replace(/\/$/, ''));
+    return folder instanceof TFolder ? folder : null;
+  }
+
   private file(path: string): TFile | null {
     const file = this.app.vault.getAbstractFileByPath(path);
     return file instanceof TFile ? file : null;
   }
 
   private async createParents(path: string): Promise<void> {
-    const parts = path.split('/').slice(0, -1);
+    const parent = path.split('/').slice(0, -1).join('/');
+    if (parent) await this.createFolders(parent);
+  }
+
+  // Creates a folder and any folders above it that are missing.
+  private async createFolders(dir: string): Promise<void> {
+    const parts = dir.split('/');
     for (let i = 1; i <= parts.length; i++) {
       const folder = parts.slice(0, i).join('/');
       const existing = this.app.vault.getAbstractFileByPath(folder);

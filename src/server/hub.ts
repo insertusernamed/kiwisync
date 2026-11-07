@@ -13,15 +13,20 @@ import { dirname, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
   CONFIG_DIR,
+  FOLDER,
   PLUGIN_LIST,
+  configCategory,
+  isFolderPath,
   isHubPath,
   isMergeable,
   normalizePluginList,
+  parentFolders,
   pathKey,
 } from '../shared/paths';
 import type {
   DeleteResponse,
   DeletedFile,
+  FolderResponse,
   HistoryEntry,
   HistoryKind,
   PutResponse,
@@ -160,7 +165,7 @@ export class Hub {
         throw new HttpError(409, `"${clash.path}" already exists with different capitalization.`);
       await mkdir(dirname(this.full(to)), { recursive: true });
       await rename(this.full(from), this.full(to));
-      await pruneEmptyFolders(this.vault, from);
+      if (configCategory(from)) await pruneEmptyFolders(this.vault, from);
       const s = await lstat(this.full(to));
       this.session = null;
       await this.repo.commit(
@@ -174,6 +179,7 @@ export class Hub {
       );
       // The rename keeps the file's edit time and author, so it does not count as a newer edit.
       const kept = { editedAt: source.editedAt, device: source.device };
+      this.recordFolders(to, deviceId);
       const seq = this.store.saveFile(
         { path: to, blob: source.blob, size: s.size, mtime: s.mtimeMs, ...kept },
         pathKey(to),
@@ -184,6 +190,33 @@ export class Hub {
       });
       this.notify();
       return { blob: source.blob, seq };
+    });
+  }
+
+  createFolder(path: string, deviceId: string): Promise<FolderResponse> {
+    return this.exclusive(async () => {
+      checkFolder(path);
+      await mkdir(this.full(path), { recursive: true });
+      const seq = this.recordFolders(path, deviceId);
+      if (seq) this.notify();
+      return { outcome: 'created', seq: seq || this.store.file(path)!.seq };
+    });
+  }
+
+  // Removes an empty folder. A folder that still holds synced files or folders, or anything
+  // on disk that is not hidden, is kept: the device asking has not seen those yet.
+  removeFolder(path: string, deviceId: string): Promise<FolderResponse> {
+    return this.exclusive(async () => {
+      checkFolder(path);
+      const row = this.store.file(path);
+      const entries = await readdir(this.full(path)).catch(() => []);
+      if (this.store.hasLiveInside(path) || entries.some((name) => !name.startsWith('.')))
+        return { outcome: 'kept', seq: row?.seq ?? 0 };
+      await rm(this.full(path), { recursive: true, force: true });
+      if (!row?.blob) return { outcome: 'deleted', seq: row?.seq ?? 0 };
+      const seq = this.saveFolder(path, null, deviceId);
+      this.notify();
+      return { outcome: 'deleted', seq };
     });
   }
 
@@ -367,12 +400,15 @@ export class Hub {
     kind: HistoryKind,
   ): Promise<number> {
     let disk: DiskFile = { size: 0, mtime: 0 };
-    if (bytes) disk = await this.writeDisk(path, bytes);
-    else {
+    if (bytes) {
+      disk = await this.writeDisk(path, bytes);
+      this.recordFolders(path, deviceId);
+    } else {
       await unlink(this.full(path)).catch((e: NodeJS.ErrnoException) => {
         if (e.code !== 'ENOENT') throw e;
       });
-      await pruneEmptyFolders(this.vault, path);
+      // A plugin's folder goes with its last file. Note folders are synced in their own right.
+      if (configCategory(path)) await pruneEmptyFolders(this.vault, path);
     }
     const now = Date.now();
     const session = this.session;
@@ -404,6 +440,23 @@ export class Hub {
     return seq;
   }
 
+  // Records the folders a path sits in, and the path itself if it is a folder, that are not
+  // recorded yet. Returns the last change number used, or 0 if nothing was new.
+  private recordFolders(path: string, deviceId: string): number {
+    if (!isHubPath(path) || configCategory(path)) return 0;
+    let seq = 0;
+    for (const folder of [...parentFolders(path), ...(isFolderPath(path) ? [path] : [])])
+      if (this.store.file(folder)?.blob !== FOLDER) seq = this.saveFolder(folder, FOLDER, deviceId);
+    return seq;
+  }
+
+  private saveFolder(path: string, blob: string | null, deviceId: string): number {
+    return this.store.saveFile(
+      { path, blob, size: 0, mtime: 0, editedAt: Date.now(), device: deviceId },
+      pathKey(path),
+    );
+  }
+
   private async writeDisk(path: string, bytes: Uint8Array): Promise<DiskFile> {
     const full = this.full(path);
     await mkdir(dirname(full), { recursive: true });
@@ -415,7 +468,14 @@ export class Hub {
   }
 
   private async scanNow(only?: string[]): Promise<number> {
-    const disk = only ? await this.statPaths(only) : await this.walk();
+    let folderChanges = 0;
+    let disk: Map<string, DiskFile>;
+    if (only) disk = await this.statPaths(only);
+    else {
+      const walked = await this.walk();
+      disk = walked.files;
+      folderChanges = this.syncFolders(walked.folders);
+    }
     const changes: (FileChange & DiskFile & { editedAt: number })[] = [];
     for (let [path, stat] of disk) {
       const row = this.store.file(path);
@@ -440,9 +500,12 @@ export class Hub {
       ? only.map((p) => this.store.file(p)).filter((r): r is FileRow => !!r?.blob)
       : this.store.liveFiles();
     for (const row of tracked)
-      if (!disk.has(row.path))
+      if (!isFolderPath(row.path) && !disk.has(row.path))
         changes.push({ path: row.path, blob: null, size: 0, mtime: 0, editedAt: Date.now() });
-    if (!changes.length) return 0;
+    if (!changes.length) {
+      if (folderChanges) this.notify();
+      return folderChanges;
+    }
 
     // A file that disappeared while a new one with the same contents appeared was moved.
     const links = new Map<string, RenameLink>();
@@ -482,27 +545,43 @@ export class Hub {
         links.get(c.path),
       );
     this.notify();
-    return changes.length;
+    return changes.length + folderChanges;
   }
 
-  private async walk(): Promise<Map<string, DiskFile>> {
-    const found = new Map<string, DiskFile>();
+  // Folders created or removed directly in the vault folder on this machine. New folders are
+  // recorded outermost first and removed ones innermost first, the order devices apply them in.
+  private syncFolders(onDisk: Set<string>): number {
+    const recorded = new Set(this.store.liveFolders().map((r) => r.path));
+    const added = [...onDisk].filter((f) => !recorded.has(f)).sort();
+    const removed = [...recorded]
+      .filter((f) => !onDisk.has(f))
+      .sort()
+      .reverse();
+    for (const folder of added) this.saveFolder(folder, FOLDER, HUB_ID);
+    for (const folder of removed) this.saveFolder(folder, null, HUB_ID);
+    return added.length + removed.length;
+  }
+
+  private async walk(): Promise<{ files: Map<string, DiskFile>; folders: Set<string> }> {
+    const files = new Map<string, DiskFile>();
+    const folders = new Set<string>();
     const visit = async (dir: string) => {
       for (const entry of await readdir(dir, { withFileTypes: true })) {
         const full = join(dir, entry.name);
         const isConfig = dir === this.vault && entry.name === CONFIG_DIR;
         if (entry.name.startsWith('.') && !isConfig) continue;
-        if (entry.isDirectory()) await visit(full);
-        else if (entry.isFile()) {
-          const path = relative(this.vault, full).split(sep).join('/');
-          if (!isHubPath(path)) continue;
+        const path = relative(this.vault, full).split(sep).join('/');
+        if (entry.isDirectory()) {
+          if (isFolderPath(`${path}/`)) folders.add(`${path}/`);
+          await visit(full);
+        } else if (entry.isFile() && isHubPath(path)) {
           const s = await lstat(full);
-          found.set(path, { size: s.size, mtime: s.mtimeMs });
+          files.set(path, { size: s.size, mtime: s.mtimeMs });
         }
       }
     };
     await visit(this.vault);
-    return found;
+    return { files, folders };
   }
 
   private async statPaths(paths: string[]): Promise<Map<string, DiskFile>> {
@@ -541,7 +620,8 @@ export class Hub {
 }
 
 // Removes the folders above `path` that are left empty, stopping at the first one that is not
-// and never removing the root or the settings folder itself.
+// and never removing the root or the settings folder itself. Used for settings folders, which
+// are not synced as folders.
 export async function pruneEmptyFolders(root: string, path: string): Promise<void> {
   const parts = path.split('/').slice(0, -1);
   while (parts.length && parts.join('/') !== CONFIG_DIR) {
@@ -555,7 +635,12 @@ export async function pruneEmptyFolders(root: string, path: string): Promise<voi
 }
 
 function checkPath(path: string): void {
-  if (!isHubPath(path)) throw new HttpError(400, `KiwiSync does not sync "${path}".`);
+  if (!isHubPath(path) || isFolderPath(path))
+    throw new HttpError(400, `KiwiSync does not sync "${path}".`);
+}
+
+function checkFolder(path: string): void {
+  if (!isFolderPath(path)) throw new HttpError(400, `"${path}" is not a folder path.`);
 }
 
 function normalized(path: string, bytes: Uint8Array): Uint8Array {

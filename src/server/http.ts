@@ -115,6 +115,16 @@ export function makeServer(options: ServerOptions) {
       const bytes = await body(req, hub.maxFileBytes);
       return json(res, 200, await hub.put(path, base, edited, bytes, device.id));
     }
+    if (route === 'PUT /api/folders' || route === 'DELETE /api/folders') {
+      const path = url.searchParams.get('path') ?? '';
+      return json(
+        res,
+        200,
+        req.method === 'PUT'
+          ? await hub.createFolder(path, device.id)
+          : await hub.removeFolder(path, device.id),
+      );
+    }
     if (route === 'POST /api/rename') {
       const { from, to } = (await jsonBody(req)) as { from?: unknown; to?: unknown };
       if (typeof from !== 'string' || typeof to !== 'string' || from === to)

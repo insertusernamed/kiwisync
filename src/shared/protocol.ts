@@ -3,6 +3,7 @@ export const PROTOCOL = 1;
 export type Platform = 'desktop' | 'ios' | 'android' | 'hub';
 
 export interface Change {
+  // A path ending in a slash is a folder, with FOLDER as its blob.
   path: string;
   blob: string | null;
   seq: number;
@@ -66,6 +67,12 @@ export interface HistoryEntry {
   kind: HistoryKind;
   // For a rename, the previous path.
   from?: string;
+}
+
+export interface FolderResponse {
+  // kept: a delete was refused because the folder holds files this device has not seen.
+  outcome: 'created' | 'deleted' | 'kept';
+  seq: number;
 }
 
 export interface RenameResponse {

@@ -9,7 +9,7 @@ import {
   Vault,
   requestUrl,
 } from 'obsidian';
-import { configCategory, isSyncPath, type ConfigCategory } from '../shared/paths';
+import { configCategory, isFolderPath, isSyncPath, type ConfigCategory } from '../shared/paths';
 import { Api, ApiError, type Fetcher } from './api';
 import { defaultDeviceName, devicePlatform } from './device';
 import { ObsidianVault } from './obsidian-vault';
@@ -124,8 +124,9 @@ export default class KiwiSyncPlugin extends Plugin {
 
     const edited = (file: TAbstractFile, oldPath?: string) => {
       if (!this.engine) return;
-      if (oldPath) this.engine.noteEdit(oldPath);
-      if (file instanceof TFile) this.engine.noteEdit(file.path);
+      const suffix = file instanceof TFolder ? '/' : '';
+      if (oldPath) this.engine.noteEdit(oldPath + suffix);
+      this.engine.noteEdit(file.path + suffix);
       this.syncSoon();
     };
     this.app.workspace.onLayoutReady(() => {
@@ -149,12 +150,16 @@ export default class KiwiSyncPlugin extends Plugin {
       this.registerEvent(
         this.app.vault.on('rename', (f, oldPath) => {
           if (!this.engine) return;
-          if (f instanceof TFolder)
+          // Files move as renames. Folders, including those inside, are noticed by the next scan
+          // as removed at the old path and created at the new one.
+          if (f instanceof TFolder) {
             Vault.recurseChildren(f, (child) => {
               if (child instanceof TFile)
                 this.engine?.noteRename(oldPath + child.path.slice(f.path.length), child.path);
             });
-          else this.engine.noteRename(oldPath, f.path);
+            this.engine.noteEdit(`${oldPath}/`);
+            this.engine.noteEdit(`${f.path}/`);
+          } else this.engine.noteRename(oldPath, f.path);
           this.syncSoon();
         }),
       );
@@ -270,7 +275,7 @@ export default class KiwiSyncPlugin extends Plugin {
   }
 
   private wanted = (path: string): boolean => {
-    if (isSyncPath(path)) return true;
+    if (isSyncPath(path) || isFolderPath(path)) return true;
     const group = configCategory(path);
     return group !== null && this.settings.settingsSync[group];
   };

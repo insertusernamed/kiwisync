@@ -39,8 +39,22 @@ export function configCategory(path: string): ConfigCategory | null {
   return null;
 }
 
+// Folders are synced as entries of their own, so empty folders and folder deletions reach
+// every device. Their paths end in a slash and their version is FOLDER instead of a blob id.
+export const FOLDER = 'folder';
+
+export function isFolderPath(path: string): boolean {
+  return path.endsWith('/') && isSyncPath(path.slice(0, -1));
+}
+
+// The folders that contain a path, outermost first: "a/b/c.md" gives "a/", "a/b/".
+export function parentFolders(path: string): string[] {
+  const parts = path.replace(/\/$/, '').split('/').slice(0, -1);
+  return parts.map((_, i) => `${parts.slice(0, i + 1).join('/')}/`);
+}
+
 export function isHubPath(path: string): boolean {
-  return isSyncPath(path) || configCategory(path) !== null;
+  return isSyncPath(path) || isFolderPath(path) || configCategory(path) !== null;
 }
 
 // iOS and macOS treat paths that differ only in case or Unicode form as the same file.

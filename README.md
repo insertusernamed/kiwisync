@@ -18,6 +18,8 @@ There are no conflict files or branches of the vault for you to sort out.
 
 Renaming or moving a file moves it on every device, and its history follows it to the new name. An edit made on another device under the old name, before it heard about the rename, ends up in the renamed file.
 
+Folders sync as well, empty ones included. Deleting a folder deletes it and its contents on every device, with one exception: if another device has put a note in that folder that has not synced yet, the folder stays so the note has somewhere to go. Git does not record empty folders, so folders do not appear in the history.
+
 Hidden files and folders, such as `.trash`, stay on each device. The `.obsidian` settings folder is synced only as described under Plugins and settings.
 
 ## Setting up the hub

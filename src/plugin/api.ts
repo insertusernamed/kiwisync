@@ -3,6 +3,7 @@ import type {
   DeleteResponse,
   DeletedFile,
   Device,
+  FolderResponse,
   Health,
   HistoryEntry,
   PairRequest,
@@ -86,6 +87,14 @@ export class Api {
 
   remove(path: string, base: string | null, edited: number): Promise<DeleteResponse> {
     return this.json('DELETE', `/api/files?${fileQuery(path, base, edited)}`);
+  }
+
+  createFolder(path: string): Promise<FolderResponse> {
+    return this.json('PUT', `/api/folders?${new URLSearchParams({ path })}`);
+  }
+
+  removeFolder(path: string): Promise<FolderResponse> {
+    return this.json('DELETE', `/api/folders?${new URLSearchParams({ path })}`);
   }
 
   rename(from: string, to: string): Promise<RenameResponse> {
