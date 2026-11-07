@@ -115,6 +115,18 @@ export function makeServer(options: ServerOptions) {
       const bytes = await body(req, hub.maxFileBytes);
       return json(res, 200, await hub.put(path, base, edited, bytes, device.id));
     }
+    if (route === 'POST /api/rename') {
+      const { from, to } = (await jsonBody(req)) as { from?: unknown; to?: unknown };
+      if (typeof from !== 'string' || typeof to !== 'string' || from === to)
+        throw new HttpError(400, 'Bad rename request.');
+      return json(res, 200, await hub.rename(from, to, device.id));
+    }
+    if (route === 'POST /api/rename') {
+      const { from, to } = (await jsonBody(req)) as { from?: unknown; to?: unknown };
+      if (typeof from !== 'string' || typeof to !== 'string' || from === to)
+        throw new HttpError(400, 'Bad rename request.');
+      return json(res, 200, await hub.rename(from, to, device.id));
+    }
     if (route === 'GET /api/history')
       return json(res, 200, await hub.history(url.searchParams.get('path') ?? ''));
     if (route === 'GET /api/deleted') return json(res, 200, hub.deleted());

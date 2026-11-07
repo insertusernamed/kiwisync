@@ -1,5 +1,15 @@
-import { MarkdownView, Notice, Platform, Plugin, TAbstractFile, TFile, requestUrl } from 'obsidian';
-import { isSyncPath } from '../shared/paths';
+import {
+  MarkdownView,
+  Notice,
+  Platform,
+  Plugin,
+  TAbstractFile,
+  TFile,
+  TFolder,
+  Vault,
+  requestUrl,
+} from 'obsidian';
+import { configCategory, isSyncPath, type ConfigCategory } from '../shared/paths';
 import { Api, ApiError, type Fetcher } from './api';
 import { defaultDeviceName, devicePlatform } from './device';
 import { ObsidianVault } from './obsidian-vault';
@@ -12,6 +22,7 @@ interface Settings {
   deviceName: string;
   secretId: string;
   updates: boolean;
+  settingsSync: Record<ConfigCategory, boolean>;
 }
 
 const DEFAULTS: Settings = {
@@ -20,6 +31,12 @@ const DEFAULTS: Settings = {
   deviceName: '',
   secretId: '',
   updates: true,
+  settingsSync: { plugins: false, themes: false, settings: false },
+};
+const GROUP_LABELS: Record<ConfigCategory, string> = {
+  plugins: 'plugins',
+  themes: 'themes and snippets',
+  settings: 'settings',
 };
 const OTHER_SYNC_PLUGINS: Record<string, string> = {
   'obsidian-livesync': 'Self-hosted LiveSync',
@@ -49,7 +66,12 @@ export default class KiwiSyncPlugin extends Plugin {
   private lastUpdateCheck = 0;
 
   async onload(): Promise<void> {
-    this.settings = { ...DEFAULTS, ...((await this.loadData()) as Partial<Settings> | null) };
+    const saved = (await this.loadData()) as Partial<Settings> | null;
+    this.settings = {
+      ...DEFAULTS,
+      ...saved,
+      settingsSync: { ...DEFAULTS.settingsSync, ...saved?.settingsSync },
+    };
     this.settingTab = new KiwiSyncSettingTab(this.app, this);
     this.addSettingTab(this.settingTab);
     if (Platform.isDesktopApp) this.statusBar = this.addStatusBarItem();
@@ -124,7 +146,18 @@ export default class KiwiSyncPlugin extends Plugin {
       this.registerEvent(this.app.vault.on('create', (f) => edited(f)));
       this.registerEvent(this.app.vault.on('modify', (f) => edited(f)));
       this.registerEvent(this.app.vault.on('delete', (f) => edited(f, f.path)));
-      this.registerEvent(this.app.vault.on('rename', (f, oldPath) => edited(f, oldPath)));
+      this.registerEvent(
+        this.app.vault.on('rename', (f, oldPath) => {
+          if (!this.engine) return;
+          if (f instanceof TFolder)
+            Vault.recurseChildren(f, (child) => {
+              if (child instanceof TFile)
+                this.engine?.noteRename(oldPath + child.path.slice(f.path.length), child.path);
+            });
+          else this.engine.noteRename(oldPath, f.path);
+          this.syncSoon();
+        }),
+      );
       this.registerDomEvent(document, 'visibilitychange', () => {
         if (!document.hidden) void this.sync();
       });
@@ -196,7 +229,11 @@ export default class KiwiSyncPlugin extends Plugin {
 
   async disconnect(): Promise<void> {
     if (this.settings.secretId) this.app.secretStorage.setSecret(this.settings.secretId, '');
-    this.settings = { ...DEFAULTS, updates: this.settings.updates };
+    this.settings = {
+      ...DEFAULTS,
+      updates: this.settings.updates,
+      settingsSync: this.settings.settingsSync,
+    };
     await this.saveData(this.settings);
     await this.writeState(emptyState());
     this.engine = null;
@@ -204,6 +241,39 @@ export default class KiwiSyncPlugin extends Plugin {
     this.error = null;
     this.refresh();
   }
+
+  // Turning a group on takes the hub's copies of files both sides have, after saving this
+  // device's copies on a history branch. Returns that branch, if one was needed.
+  async setSettingsSync(group: ConfigCategory, on: boolean): Promise<string | null> {
+    this.settings.settingsSync[group] = on;
+    await this.saveData(this.settings);
+    const inGroup = (path: string) => configCategory(path) === group;
+    if (!this.engine) return null;
+    if (!on) {
+      this.engine.forget(inGroup);
+      return null;
+    }
+    let branch: string | null;
+    try {
+      branch = await this.engine.adopt(
+        inGroup,
+        `${this.settings.deviceName} ${GROUP_LABELS[group]}`,
+      );
+    } catch (e) {
+      this.settings.settingsSync[group] = false;
+      await this.saveData(this.settings);
+      this.engine.forget(inGroup);
+      throw e;
+    }
+    await this.sync();
+    return branch;
+  }
+
+  private wanted = (path: string): boolean => {
+    if (isSyncPath(path)) return true;
+    const group = configCategory(path);
+    return group !== null && this.settings.settingsSync[group];
+  };
 
   async renameThisDevice(name: string): Promise<void> {
     if (!this.api) return;
@@ -274,8 +344,10 @@ export default class KiwiSyncPlugin extends Plugin {
           new Notice(`KiwiSync stopped: ${message}`, 0);
           void this.disconnect();
         },
+        settingsChanged: () => this.showSettingsChanged(),
       },
     );
+    engine.wanted = this.wanted;
     const branch = join ? await engine.join(join.mode, join.label) : null;
     this.engine = engine;
     await this.sync();
@@ -302,6 +374,21 @@ export default class KiwiSyncPlugin extends Plugin {
   private syncSoon(): void {
     window.clearTimeout(this.debounce);
     this.debounce = window.setTimeout(() => void this.sync(), 500);
+  }
+
+  private showSettingsChanged(): void {
+    const message = createFragment((f) => {
+      f.appendText('New plugins or settings arrived from the hub. ');
+      f.createEl('a', { text: 'Reload Obsidian to use them', href: '#' }, (a) =>
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          (
+            this.app as unknown as { commands: { executeCommandById(id: string): boolean } }
+          ).commands.executeCommandById('app:reload');
+        }),
+      );
+    });
+    new Notice(message, 0);
   }
 
   private showReplaced(path: string, by: string): void {

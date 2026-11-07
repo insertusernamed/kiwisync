@@ -22,6 +22,7 @@ export interface LogEntry {
   deviceId: string;
   author: string;
   kind: HistoryKind;
+  from?: string;
 }
 
 interface RunResult {
@@ -183,13 +184,14 @@ export class Repo {
     return { blob: text(result.stdout), conflicts: result.code };
   }
 
+  // Follows the file back through renames, so its history includes versions under old names.
   async log(path: string, ref: string, limit: number): Promise<LogEntry[]> {
     if (!(await this.head(ref))) return [];
     const out = await this.git([
       'log',
       ref,
       `-n${limit}`,
-      '--no-renames',
+      '--follow',
       '--raw',
       '--no-abbrev',
       '--format=%x1e%H%x1f%ae%x1f%an%x1f%at%x1f%(trailers:key=KiwiSync-Kind,valueonly,separator=)',
@@ -200,7 +202,9 @@ export class Repo {
     for (const record of out.toString().split('\x1e').slice(1)) {
       const [header = '', ...rest] = record.split('\n');
       const [commit, email, author, seconds, kind] = header.split('\x1f');
-      const raw = /^:\d+ \d+ [0-9a-f]{40} ([0-9a-f]{40}) /m.exec(rest.join('\n'));
+      const raw = /^:\d+ \d+ [0-9a-f]{40} ([0-9a-f]{40}) (\w)\d*\t([^\t\n]*)/m.exec(
+        rest.join('\n'),
+      );
       if (!commit || !raw) continue;
       entries.push({
         commit,
@@ -209,6 +213,7 @@ export class Repo {
         deviceId: email?.replace(/@kiwisync$/, '') ?? '',
         author: author ?? '',
         kind: (kind?.trim() || 'edit') as HistoryKind,
+        ...(raw[2] === 'R' ? { from: raw[3]! } : {}),
       });
     }
     return entries;

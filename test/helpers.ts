@@ -1,9 +1,19 @@
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { blobId } from '../src/shared/blob';
-import { isSyncPath } from '../src/shared/paths';
+import { isHubPath } from '../src/shared/paths';
 import { readConfig } from '../src/server/config';
 import { makeServer } from '../src/server/http';
 import { openHub } from '../src/server/open';
@@ -34,7 +44,7 @@ export class FolderVault implements LocalVault {
     for (const e of entries) {
       if (!e.isFile()) continue;
       const path = relative(this.root, join(e.parentPath, e.name)).split(sep).join('/');
-      if (isSyncPath(path)) files.push((await this.stat(path))!);
+      if (isHubPath(path)) files.push((await this.stat(path))!);
     }
     return files;
   }
@@ -67,6 +77,15 @@ export class FolderVault implements LocalVault {
     return true;
   }
 
+  async rename(from: string, to: string, expected: string): Promise<boolean> {
+    const current = await this.read(from);
+    if (!current || (await this.stat(to)) || (await blobId(current.bytes)) !== expected)
+      return false;
+    await mkdir(dirname(this.full(to)), { recursive: true });
+    await rename(this.full(from), this.full(to));
+    return true;
+  }
+
   async edit(path: string, text: string): Promise<void> {
     await mkdir(dirname(this.full(path)), { recursive: true });
     await writeFile(this.full(path), text);
@@ -91,9 +110,12 @@ export interface Client {
   api: Api;
   engine: SyncEngine;
   replaced: { path: string; by: string }[];
+  settingsChanged: number;
   sync(): Promise<void>;
   // Deletes a file and reports it the way Obsidian's delete event does.
   remove(path: string): Promise<void>;
+  // Renames a file and reports it the way Obsidian's rename event does.
+  move(from: string, to: string): Promise<void>;
 }
 
 export async function startHub() {
@@ -134,19 +156,27 @@ export async function startHub() {
     const engine = new SyncEngine(vault, api, emptyState(), async () => {}, {
       replaced: (path, by) => replaced.push({ path, by }),
       disconnected: () => {},
+      settingsChanged: () => client.settingsChanged++,
     });
-    return {
+    const client: Client = {
       name,
       vault,
       api,
       engine,
       replaced,
+      settingsChanged: 0,
       sync: () => engine.sync(),
       async remove(path) {
         await vault.delete(path);
         engine.noteEdit(path);
       },
-    } satisfies Client;
+      async move(from, to) {
+        await mkdir(dirname(join(vault.root, to)), { recursive: true });
+        await rename(join(vault.root, from), join(vault.root, to));
+        engine.noteRename(from, to);
+      },
+    };
+    return client;
   }
 
   return {

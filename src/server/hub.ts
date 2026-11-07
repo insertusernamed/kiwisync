@@ -1,16 +1,24 @@
 import { lstat, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { isMergeable, isSyncPath, pathKey } from '../shared/paths';
+import {
+  CONFIG_DIR,
+  PLUGIN_LIST,
+  isHubPath,
+  isMergeable,
+  normalizePluginList,
+  pathKey,
+} from '../shared/paths';
 import type {
   DeleteResponse,
   DeletedFile,
   HistoryEntry,
   HistoryKind,
   PutResponse,
+  RenameResponse,
 } from '../shared/protocol';
 import { REPLACED_BRANCH, type Author, type FileChange, type Repo } from './repo';
-import { HUB_ID, type FileRow, type Store } from './store';
+import { HUB_ID, type FileRow, type RenameLink, type Store } from './store';
 
 export class HttpError extends Error {
   constructor(
@@ -38,6 +46,7 @@ const VERBS: Record<HistoryKind, string> = {
   replaced: 'Replaced edit to',
   restore: 'Restore',
   import: 'Import',
+  rename: 'Rename',
 };
 
 // Owns the vault folder. Every change, whether uploaded by a device or made directly on this
@@ -113,6 +122,7 @@ export class Hub {
         time: e.time,
         kind: e.kind,
         device: this.store.device(e.deviceId)?.name ?? e.author,
+        ...(e.from ? { from: e.from } : {}),
       }));
   }
 
@@ -123,6 +133,47 @@ export class Hub {
       time: f.editedAt,
       device: this.deviceName(f.device),
     }));
+  }
+
+  // Moves a file and its history to a new path. The hub's current contents move, including
+  // edits the renaming device has not seen; it uploads its own edits to the new path after.
+  rename(from: string, to: string, deviceId: string): Promise<RenameResponse> {
+    return this.exclusive(async () => {
+      checkPath(from);
+      checkPath(to);
+      await this.scanNow([from, to]);
+      const source = this.store.file(from);
+      if (!source?.blob) throw new HttpError(404, `${from} is no longer on the hub.`);
+      if (this.store.file(to)?.blob) throw new HttpError(409, `${to} already exists.`);
+      const clash = this.store.liveFileByKey(pathKey(to));
+      if (clash && clash.path !== from)
+        throw new HttpError(409, `"${clash.path}" already exists with different capitalization.`);
+      await mkdir(dirname(this.full(to)), { recursive: true });
+      await rename(this.full(from), this.full(to));
+      const s = await lstat(this.full(to));
+      this.session = null;
+      await this.repo.commit(
+        [
+          { path: to, blob: source.blob },
+          { path: from, blob: null },
+        ],
+        this.author(deviceId, Date.now()),
+        'rename',
+        `Rename ${from} to ${to}`,
+      );
+      // The rename keeps the file's edit time and author, so it does not count as a newer edit.
+      const kept = { editedAt: source.editedAt, device: source.device };
+      const seq = this.store.saveFile(
+        { path: to, blob: source.blob, size: s.size, mtime: s.mtimeMs, ...kept },
+        pathKey(to),
+        { renamedFrom: from },
+      );
+      this.store.saveFile({ path: from, blob: null, size: 0, mtime: 0, ...kept }, pathKey(from), {
+        movedTo: to,
+      });
+      this.notify();
+      return { blob: source.blob, seq };
+    });
   }
 
   // Saves files on a branch of their own without changing the vault, such as a device's notes
@@ -165,6 +216,11 @@ export class Hub {
     if (bytes.length > this.maxFileBytes) throw new HttpError(413, `${path} is too large to sync.`);
     await this.scanNow([path]);
     const current = this.store.file(path);
+    // An edit to a file another device has since renamed belongs at the new path.
+    const target = current && !current.blob && base ? this.renamedTo(path) : null;
+    if (target)
+      return { ...(await this.putNow(target, base, editedAt, bytes, deviceId)), movedTo: target };
+    bytes = normalized(path, bytes);
     const currentBlob = current?.blob ?? null;
     const blob = await this.repo.writeBlob(bytes);
     if (blob === currentBlob)
@@ -268,6 +324,16 @@ export class Hub {
       this.store.addReplacement(current.device, path, byDevice);
   }
 
+  private renamedTo(path: string): string | null {
+    const seen = new Set<string>();
+    let row = this.store.file(path);
+    while (row && !row.blob && row.movedTo && !seen.has(row.path)) {
+      seen.add(row.path);
+      row = this.store.file(row.movedTo);
+    }
+    return row?.blob && row.path !== path ? row.path : null;
+  }
+
   private async keepReplaced(path: string, blob: string, editedAt: number, deviceId: string) {
     await this.repo.commit(
       [{ path, blob }],
@@ -289,20 +355,12 @@ export class Hub {
     deviceId: string,
     kind: HistoryKind,
   ): Promise<number> {
-    const full = this.full(path);
     let disk: DiskFile = { size: 0, mtime: 0 };
-    if (bytes) {
-      await mkdir(dirname(full), { recursive: true });
-      const temp = join(dirname(full), `.kiwisync-${randomUUID()}`);
-      await writeFile(temp, bytes);
-      await rename(temp, full);
-      const s = await lstat(full);
-      disk = { size: s.size, mtime: s.mtimeMs };
-    } else {
-      await unlink(full).catch((e: NodeJS.ErrnoException) => {
+    if (bytes) disk = await this.writeDisk(path, bytes);
+    else
+      await unlink(this.full(path)).catch((e: NodeJS.ErrnoException) => {
         if (e.code !== 'ENOENT') throw e;
       });
-    }
     const now = Date.now();
     const session = this.session;
     const fold =
@@ -333,10 +391,20 @@ export class Hub {
     return seq;
   }
 
+  private async writeDisk(path: string, bytes: Uint8Array): Promise<DiskFile> {
+    const full = this.full(path);
+    await mkdir(dirname(full), { recursive: true });
+    const temp = join(dirname(full), `.kiwisync-${randomUUID()}`);
+    await writeFile(temp, bytes);
+    await rename(temp, full);
+    const s = await lstat(full);
+    return { size: s.size, mtime: s.mtimeMs };
+  }
+
   private async scanNow(only?: string[]): Promise<number> {
     const disk = only ? await this.statPaths(only) : await this.walk();
     const changes: (FileChange & DiskFile & { editedAt: number })[] = [];
-    for (const [path, stat] of disk) {
+    for (let [path, stat] of disk) {
       const row = this.store.file(path);
       if (row?.blob && row.size === stat.size && row.mtime === stat.mtime) continue;
       if (stat.size > this.maxFileBytes) {
@@ -345,7 +413,13 @@ export class Hub {
         this.oversized.add(path);
         continue;
       }
-      const blob = await this.repo.writeBlob(await readFile(this.full(path)));
+      let bytes: Uint8Array = await readFile(this.full(path));
+      const fixed = normalized(path, bytes);
+      if (fixed !== bytes) {
+        stat = await this.writeDisk(path, fixed);
+        bytes = fixed;
+      }
+      const blob = await this.repo.writeBlob(bytes);
       if (row?.blob === blob) this.store.touchFile(path, stat.size, stat.mtime);
       else changes.push({ path, blob, ...stat, editedAt: Math.round(stat.mtime) });
     }
@@ -357,14 +431,31 @@ export class Hub {
         changes.push({ path: row.path, blob: null, size: 0, mtime: 0, editedAt: Date.now() });
     if (!changes.length) return 0;
 
+    // A file that disappeared while a new one with the same contents appeared was moved.
+    const links = new Map<string, RenameLink>();
+    const added = new Map<string, string>();
+    for (const c of changes)
+      if (c.blob && !this.store.file(c.path)?.blob) added.set(c.blob, c.path);
+    for (const c of changes) {
+      const before = c.blob ? null : this.store.file(c.path)?.blob;
+      const to = before && added.get(before);
+      if (!to || links.has(to)) continue;
+      links.set(to, { renamedFrom: c.path });
+      links.set(c.path, { movedTo: to });
+    }
+
     this.session = null;
     const time = Math.max(...changes.map((c) => c.editedAt));
+    const [only1] = changes;
     const subject =
       changes.length === 1
-        ? `${changes[0]!.blob ? 'Edit' : 'Delete'} ${changes[0]!.path}`
-        : `Edit ${changes.length} files`;
+        ? `${only1!.blob ? 'Edit' : 'Delete'} ${only1!.path}`
+        : changes.length === 2 && links.size === 2
+          ? `Rename ${changes.find((c) => !c.blob)!.path} to ${changes.find((c) => c.blob)!.path}`
+          : `Edit ${changes.length} files`;
     await this.repo.commit(changes, this.author(HUB_ID, time), 'edit', subject);
-    for (const c of changes)
+    // New paths are recorded before deletions, so devices see a rename's target first.
+    for (const c of [...changes].sort((a, b) => Number(!a.blob) - Number(!b.blob)))
       this.store.saveFile(
         {
           path: c.path,
@@ -375,6 +466,7 @@ export class Hub {
           device: HUB_ID,
         },
         pathKey(c.path),
+        links.get(c.path),
       );
     this.notify();
     return changes.length;
@@ -384,12 +476,13 @@ export class Hub {
     const found = new Map<string, DiskFile>();
     const visit = async (dir: string) => {
       for (const entry of await readdir(dir, { withFileTypes: true })) {
-        if (entry.name.startsWith('.')) continue;
         const full = join(dir, entry.name);
+        const isConfig = dir === this.vault && entry.name === CONFIG_DIR;
+        if (entry.name.startsWith('.') && !isConfig) continue;
         if (entry.isDirectory()) await visit(full);
         else if (entry.isFile()) {
           const path = relative(this.vault, full).split(sep).join('/');
-          if (!isSyncPath(path)) continue;
+          if (!isHubPath(path)) continue;
           const s = await lstat(full);
           found.set(path, { size: s.size, mtime: s.mtimeMs });
         }
@@ -435,7 +528,14 @@ export class Hub {
 }
 
 function checkPath(path: string): void {
-  if (!isSyncPath(path)) throw new HttpError(400, `KiwiSync does not sync "${path}".`);
+  if (!isHubPath(path)) throw new HttpError(400, `KiwiSync does not sync "${path}".`);
+}
+
+function normalized(path: string, bytes: Uint8Array): Uint8Array {
+  if (path !== PLUGIN_LIST) return bytes;
+  const text = decode(bytes);
+  const fixed = text === null ? null : normalizePluginList(text);
+  return fixed === null || fixed === text ? bytes : new TextEncoder().encode(fixed);
 }
 
 function decode(bytes: Uint8Array): string | null {

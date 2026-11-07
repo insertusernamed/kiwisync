@@ -16,7 +16,9 @@ Drawings (Excalidraw), canvases, PDFs, images, and other files that cannot be co
 
 There are no conflict files or branches of the vault for you to sort out.
 
-Files and folders whose names start with a dot, including `.obsidian`, stay on each device. Plugins, themes, and settings are not synced.
+Renaming or moving a file moves it on every device, and its history follows it to the new name. An edit made on another device under the old name, before it heard about the rename, ends up in the renamed file.
+
+Hidden files and folders, such as `.trash`, stay on each device. The `.obsidian` settings folder is synced only as described under Plugins and settings.
 
 ## Setting up the hub
 
@@ -66,11 +68,25 @@ After the first install, devices update the plugin themselves from the hub when 
 
 ## Daily use
 
-Syncing happens a couple of seconds after an edit, when Obsidian comes back to the foreground, and when another device changes something. There is nothing to press. The status bar on desktop shows the state; on phones it is at the top of KiwiSync's settings.
+An edit reaches the hub about a second after you stop typing, and other devices with Obsidian open show it a moment later. Syncing also happens when Obsidian comes back to the foreground. There is nothing to press. The status bar on desktop shows the state; on phones it is at the top of KiwiSync's settings.
 
-Right-click a file and choose Version history to see every version, which device made it, and to restore one. Restoring makes that version current on every device and keeps the history intact. Settings, Deleted files lists files deleted from any device.
+Right-click a file and choose Version history to see every version, which device made it, and to restore one. Quick successive edits to a note from one device are kept as one version, as long as they are less than two minutes apart and span under ten minutes. Restoring makes that version current on every device and keeps the history intact. Settings, Deleted files lists files deleted from any device.
 
 The device list in settings shows each device's name, when it last synced, and whether it has changes waiting to upload. Names can be changed from any device, and history shows the new name for past edits too. Removing a device stops it syncing immediately.
+
+## Plugins and settings
+
+Each device chooses whether to sync three groups, under Settings, KiwiSync, Plugins and settings. All three are off at first.
+
+- Plugins: which community plugins are enabled, and each plugin's `main.js`, `manifest.json`, `styles.css`, and `data.json`.
+- Themes and snippets: `appearance.json`, installed themes, and CSS snippets.
+- Other settings: the remaining files directly in `.obsidian`, such as hotkeys, editor options, and core plugin settings.
+
+Turning a group on makes the device use the hub's version of any file the hub already has, after saving the device's own copies on a `backup/` branch. Files the hub does not have yet are uploaded. For the list of enabled plugins, the device's list and the hub's list are combined, so a plugin enabled on only one of them stays enabled.
+
+Some files never sync: the window layout (`workspace.json`, `workspace-mobile.json`), anything else inside a plugin's folder such as caches, KiwiSync's own folder, which holds the device's connection, and Self-hosted LiveSync and Remotely Save. The hub also removes those two from the shared list of enabled plugins.
+
+Obsidian reads plugins and settings when it starts, so KiwiSync asks you to reload after changes arrive. Changes made on this device are picked up within a minute, or sooner when a note syncs or Obsidian returns to the foreground. If a plugin saves its options before you reload, it can write back its old options; reloading promptly avoids that.
 
 ## On the hub
 

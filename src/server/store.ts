@@ -11,6 +11,14 @@ export interface FileRow {
   editedAt: number;
   device: string;
   seq: number;
+  movedTo: string | null;
+}
+
+// Links between the two halves of a rename: the new path records where it came from, and the
+// old path's deletion records where it went, so it is not listed as a deleted file.
+export interface RenameLink {
+  renamedFrom?: string;
+  movedTo?: string;
 }
 
 export interface DeviceRow extends Device {
@@ -68,6 +76,12 @@ export class Store {
         used_at INTEGER
       );
     `);
+    const columns = new Set(
+      (this.db.prepare('PRAGMA table_info(files)').all() as Row[]).map((r) => String(r.name)),
+    );
+    if (!columns.has('renamed_from'))
+      this.db.exec('ALTER TABLE files ADD COLUMN renamed_from TEXT');
+    if (!columns.has('moved_to')) this.db.exec('ALTER TABLE files ADD COLUMN moved_to TEXT');
     const id = this.db.prepare(`SELECT value FROM meta WHERE key = 'server_id'`).get() as
       Row | undefined;
     this.serverId = id ? String(id.value) : randomUUID();
@@ -116,19 +130,25 @@ export class Store {
   }
 
   // Records a new current version and gives it the next change number.
-  saveFile(file: Omit<FileRow, 'seq' | 'lastBlob'>, key: string): number {
+  saveFile(
+    file: Omit<FileRow, 'seq' | 'lastBlob' | 'movedTo'>,
+    key: string,
+    link: RenameLink = {},
+  ): number {
     return this.transaction(() => {
       const seq = this.latest() + 1;
       this.db.prepare(`UPDATE meta SET value = ? WHERE key = 'seq'`).run(String(seq));
       this.db
         .prepare(
-          `INSERT INTO files (path, key, blob, last_blob, size, mtime, edited_at, device, seq)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `INSERT INTO files (path, key, blob, last_blob, size, mtime, edited_at, device, seq,
+             renamed_from, moved_to)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (path) DO UPDATE SET
              blob = excluded.blob,
              last_blob = COALESCE(excluded.blob, files.blob, files.last_blob),
              size = excluded.size, mtime = excluded.mtime, edited_at = excluded.edited_at,
-             device = excluded.device, seq = excluded.seq`,
+             device = excluded.device, seq = excluded.seq,
+             renamed_from = excluded.renamed_from, moved_to = excluded.moved_to`,
         )
         .run(
           file.path,
@@ -140,6 +160,8 @@ export class Store {
           file.editedAt,
           file.device,
           seq,
+          link.renamedFrom ?? null,
+          link.movedTo ?? null,
         );
       return seq;
     });
@@ -154,16 +176,24 @@ export class Store {
   changes(since: number, limit: number): Change[] {
     return (
       this.db
-        .prepare('SELECT path, blob, seq FROM files WHERE seq > ? ORDER BY seq LIMIT ?')
+        .prepare(
+          'SELECT path, blob, seq, renamed_from FROM files WHERE seq > ? ORDER BY seq LIMIT ?',
+        )
         .all(since, limit) as Row[]
-    ).map((r) => ({ path: String(r.path), blob: r.blob as string | null, seq: Number(r.seq) }));
+    ).map((r) => ({
+      path: String(r.path),
+      blob: r.blob as string | null,
+      seq: Number(r.seq),
+      ...(r.renamed_from && r.blob ? { from: String(r.renamed_from) } : {}),
+    }));
   }
 
   deletedFiles(limit: number): FileRow[] {
     return (
       this.db
         .prepare(
-          'SELECT * FROM files WHERE blob IS NULL AND last_blob IS NOT NULL ORDER BY edited_at DESC LIMIT ?',
+          `SELECT * FROM files WHERE blob IS NULL AND last_blob IS NOT NULL AND moved_to IS NULL
+           ORDER BY edited_at DESC LIMIT ?`,
         )
         .all(limit) as Row[]
     ).map(toFile);
@@ -302,6 +332,7 @@ function toFile(r: Row): FileRow {
     editedAt: Number(r.edited_at),
     device: String(r.device),
     seq: Number(r.seq),
+    movedTo: r.moved_to === null || r.moved_to === undefined ? null : String(r.moved_to),
   };
 }
 

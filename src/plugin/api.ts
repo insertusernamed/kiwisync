@@ -8,6 +8,7 @@ import type {
   PairRequest,
   PairResponse,
   PutResponse,
+  RenameResponse,
 } from '../shared/protocol';
 
 export interface HttpRequest {
@@ -85,6 +86,10 @@ export class Api {
 
   remove(path: string, base: string | null, edited: number): Promise<DeleteResponse> {
     return this.json('DELETE', `/api/files?${fileQuery(path, base, edited)}`);
+  }
+
+  rename(from: string, to: string): Promise<RenameResponse> {
+    return this.json('POST', '/api/rename', { from, to });
   }
 
   history(path: string): Promise<HistoryEntry[]> {

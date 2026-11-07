@@ -6,6 +6,8 @@ export interface Change {
   path: string;
   blob: string | null;
   seq: number;
+  // Set when this file was renamed from another path. The old path's deletion follows.
+  from?: string;
 }
 
 export interface ChangesResponse {
@@ -35,6 +37,8 @@ export interface PutResponse {
   seq: number;
   // Set when some or all of the upload was replaced by a newer edit from this device.
   lostTo: string | null;
+  // Set when the file had been renamed on the hub. The upload was applied at this path.
+  movedTo?: string;
 }
 
 export interface DeleteResponse {
@@ -51,7 +55,8 @@ export interface Device {
   pending: number;
 }
 
-export type HistoryKind = 'edit' | 'delete' | 'merge' | 'replaced' | 'restore' | 'import';
+export type HistoryKind =
+  'edit' | 'delete' | 'merge' | 'replaced' | 'restore' | 'import' | 'rename';
 
 export interface HistoryEntry {
   commit: string;
@@ -59,6 +64,13 @@ export interface HistoryEntry {
   time: number;
   device: string;
   kind: HistoryKind;
+  // For a rename, the previous path.
+  from?: string;
+}
+
+export interface RenameResponse {
+  blob: string;
+  seq: number;
 }
 
 export interface DeletedFile {

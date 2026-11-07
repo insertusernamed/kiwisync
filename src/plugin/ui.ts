@@ -1,6 +1,6 @@
 import { App, Modal, Notice, PluginSettingTab, Setting } from 'obsidian';
 import qrcode from 'qrcode-generator';
-import { isSyncPath } from '../shared/paths';
+import { isSyncPath, type ConfigCategory } from '../shared/paths';
 import type { Device, HistoryEntry, HistoryKind } from '../shared/protocol';
 import type KiwiSyncPlugin from './main';
 import { defaultDeviceName } from './device';
@@ -13,6 +13,7 @@ const KIND_LABELS: Record<HistoryKind, string> = {
   replaced: 'Replaced by a newer edit',
   restore: 'Restored',
   import: 'Saved copy',
+  rename: 'Renamed',
 };
 const PREVIEW_LIMIT = 200_000;
 const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -171,9 +172,8 @@ export class HistoryModal extends Modal {
       const row = new Setting(list)
         .setName(`${formatTime(entry.time)}, ${entry.device}`)
         .setDesc(
-          entry.commit === current
-            ? `${KIND_LABELS[entry.kind]} (current)`
-            : KIND_LABELS[entry.kind],
+          (entry.from ? `${KIND_LABELS[entry.kind]} from ${entry.from}` : KIND_LABELS[entry.kind]) +
+            (entry.commit === current ? ' (current)' : ''),
         );
       if (!entry.blob) continue;
       const blob = entry.blob;
@@ -354,6 +354,39 @@ export class KiwiSyncSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('Version history')
       .setDesc('Right-click a file and choose Version history, or use the command palette.');
+
+    new Setting(containerEl)
+      .setName('Plugins and settings')
+      .setDesc(
+        "Off by default, and set on each device. Turning one on makes this device use the hub's version of anything the hub already has; this device's own copies are saved in the hub's history first. Reload Obsidian after changes arrive.",
+      )
+      .setHeading();
+    const groups: [ConfigCategory, string, string][] = [
+      ['plugins', 'Plugins', 'Which community plugins are on, plus their code and options.'],
+      ['themes', 'Themes and snippets', 'The theme, CSS snippets, and appearance settings.'],
+      ['settings', 'Other settings', 'Hotkeys, editor options, and core plugin settings.'],
+    ];
+    for (const [group, name, desc] of groups)
+      new Setting(containerEl)
+        .setName(name)
+        .setDesc(desc)
+        .addToggle((t) =>
+          t.setValue(plugin.settings.settingsSync[group]).onChange(async (on) => {
+            t.setDisabled(true);
+            try {
+              const branch = await plugin.setSettingsSync(group, on);
+              if (branch)
+                new Notice(
+                  `This device's previous ${name.toLowerCase()} are saved on the hub as ${branch}.`,
+                );
+            } catch (e) {
+              new Notice((e as Error).message);
+              this.display();
+              return;
+            }
+            t.setDisabled(false);
+          }),
+        );
 
     new Setting(containerEl).setName('Advanced').setHeading();
     new Setting(containerEl)
