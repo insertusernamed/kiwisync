@@ -14,7 +14,7 @@
     "format": "prettier --write .",
     "test": "tsx --test test/*.test.ts",
     "start": "node --disable-warning=ExperimentalWarning dist/server/main.js",
-    "kiwisync": "node --disable-warning=ExperimentalWarning dist/server/cli.js"
+    "kiwisync": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env dist/server/cli.js"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
