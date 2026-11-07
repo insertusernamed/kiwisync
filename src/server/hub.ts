@@ -70,6 +70,8 @@ export class Hub {
   private queue: Promise<unknown> = Promise.resolve();
   private listeners = new Set<() => void>();
   private oversized = new Set<string>();
+  // Every folder seen by the last full scan, including hidden settings folders, for watching.
+  folders: string[] = [];
   private session: {
     commit: string;
     path: string;
@@ -565,7 +567,9 @@ export class Hub {
   private async walk(): Promise<{ files: Map<string, DiskFile>; folders: Set<string> }> {
     const files = new Map<string, DiskFile>();
     const folders = new Set<string>();
+    const visited: string[] = [];
     const visit = async (dir: string) => {
+      visited.push(dir);
       for (const entry of await readdir(dir, { withFileTypes: true })) {
         const full = join(dir, entry.name);
         const isConfig = dir === this.vault && entry.name === CONFIG_DIR;
@@ -581,6 +585,7 @@ export class Hub {
       }
     };
     await visit(this.vault);
+    this.folders = visited;
     return { files, folders };
   }
 

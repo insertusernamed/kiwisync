@@ -44,6 +44,13 @@ const OTHER_SYNC_PLUGINS: Record<string, string> = {
 };
 const POLL_SECONDS = 60;
 const TYPING_PAUSE_MS = 750;
+const DRAWING_PAUSE_MS = 1500;
+
+// The parts of an Excalidraw drawing view that its own scripting interface uses.
+interface DrawingView {
+  isDirty?(): boolean;
+  forceSave?(silent: boolean): Promise<void>;
+}
 const UPDATE_CHECK_MINUTES = 60;
 
 export const fetcher: Fetcher = async ({ url, method, headers, body }) => {
@@ -62,6 +69,7 @@ export default class KiwiSyncPlugin extends Plugin {
   private settingTab: KiwiSyncSettingTab | null = null;
   private debounce: number | undefined;
   private typing: number | undefined;
+  private drawing: number | undefined;
   private stopped = false;
   private lastUpdateCheck = 0;
 
@@ -144,6 +152,8 @@ export default class KiwiSyncPlugin extends Plugin {
           }, TYPING_PAUSE_MS);
         }),
       );
+      for (const type of ['pointerup', 'keyup'] as const)
+        this.registerDomEvent(document, type, (e) => this.drawingActivity(e), { capture: true });
       this.registerEvent(this.app.vault.on('create', (f) => edited(f)));
       this.registerEvent(this.app.vault.on('modify', (f) => edited(f)));
       this.registerEvent(this.app.vault.on('delete', (f) => edited(f, f.path)));
@@ -177,6 +187,7 @@ export default class KiwiSyncPlugin extends Plugin {
     this.stopped = true;
     window.clearTimeout(this.debounce);
     window.clearTimeout(this.typing);
+    window.clearTimeout(this.drawing);
   }
 
   get connected(): boolean {
@@ -374,6 +385,19 @@ export default class KiwiSyncPlugin extends Plugin {
         await sleep(15_000);
       }
     }
+  }
+
+  // Excalidraw keeps a drawing in memory and saves it on a timer, every 10 to 60 seconds.
+  // Saving shortly after the pen lifts gets strokes to other devices about as fast as text.
+  private drawingActivity(event: Event): void {
+    const view = this.app.workspace.getMostRecentLeaf()?.view;
+    if (!this.engine || view?.getViewType() !== 'excalidraw') return;
+    if (!(event.target instanceof Node) || !view.containerEl.contains(event.target)) return;
+    window.clearTimeout(this.drawing);
+    this.drawing = window.setTimeout(() => {
+      const drawing = view as unknown as DrawingView;
+      if (drawing.isDirty?.()) void drawing.forceSave?.(true);
+    }, DRAWING_PAUSE_MS);
   }
 
   private syncSoon(): void {

@@ -70,7 +70,7 @@ After the first install, devices update the plugin themselves from the hub when 
 
 ## Daily use
 
-An edit reaches the hub about a second after you stop typing, and other devices with Obsidian open show it a moment later. Syncing also happens when Obsidian comes back to the foreground. There is nothing to press. The status bar on desktop shows the state; on phones it is at the top of KiwiSync's settings.
+An edit reaches the hub about a second after you stop typing, and other devices with Obsidian open show it a moment later. Excalidraw keeps a drawing in memory and saves it on its own timer, every 10 to 60 seconds, so KiwiSync asks it to save about a second and a half after you stop drawing. A stroke reaches the hub in about two seconds, and an open drawing on another device takes it in without reopening. Syncing also happens when Obsidian comes back to the foreground. There is nothing to press. The status bar on desktop shows the state; on phones it is at the top of KiwiSync's settings.
 
 Right-click a file and choose Version history to see every version, which device made it, and to restore one. Quick successive edits to a note from one device are kept as one version, as long as they are less than two minutes apart and span under ten minutes. Restoring makes that version current on every device and keeps the history intact. Settings, Deleted files lists files deleted from any device.
 
